@@ -7,10 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/binaryholdings/tenderseed/internal/tenderseed"
+	"github.com/AviaOne/tenderseed/internal/tenderseed"
 
+	"github.com/cometbft/cometbft/p2p"
 	"github.com/google/subcommands"
-	"github.com/tendermint/tendermint/p2p"
 )
 
 // ShowNodeIDArgs for the show-node-id command
@@ -46,11 +46,15 @@ func (args *ShowNodeIDArgs) Execute(_ context.Context, flagSet *flag.FlagSet, _ 
 		nodeKeyFilePath = filepath.Join(args.HomeDir, nodeKeyFilePath)
 	}
 
-	tenderseed.MkdirAllPanic(filepath.Dir(nodeKeyFilePath), os.ModePerm)
+	if err := tenderseed.MkdirAll(filepath.Dir(nodeKeyFilePath), os.ModePerm); err != nil {
+		fmt.Fprintln(os.Stderr, "tenderseed:", err)
+		return subcommands.ExitFailure
+	}
 
 	nodeKey, err := p2p.LoadOrGenNodeKey(nodeKeyFilePath)
 	if err != nil {
-		panic(err)
+		fmt.Fprintln(os.Stderr, "tenderseed:", err)
+		return subcommands.ExitFailure
 	}
 
 	fmt.Println(nodeKey.ID())

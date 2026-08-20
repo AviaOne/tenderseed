@@ -1,90 +1,90 @@
-# TenderSeed
+# tenderseed
 
-## This is a fork of polychainlabs tenderseed repo
+A lightweight seed node for CometBFT p2p networks.
 
-A lightweight seed node for a Tendermint p2p network.
+A seed node keeps an address book of live peers and hands out addresses to
+nodes that ask. It does not relay or store blocks or transactions, so it costs
+almost nothing to run.
 
-Seed nodes maintain an address book of active peers on a Tendermint p2p network. New nodes can dial known seeds and request lists of active peers for establishing p2p connections.
+## Lineage
 
-This project implements a lightweight seed node. The lightweight node maintains an address book of active peers, but **does not** relay or store blocks or transactions.
+This is a fork of [binaryholdings/tenderseed](https://github.com/binaryholdings/tenderseed)
+at commit `10a64d5`, itself a fork of the original polychainlabs project. The
+upstream has been unmaintained since February 2023 and still targets
+Tendermint v0.34, which reached end of life.
 
-Familiarity with [Tendermint network operation](https://tendermint.com/docs/tendermint-core/using-tendermint.html) is a pre-requisite to understanding how to use TenderSeed.
+## What this fork changes
+
+- **CometBFT v0.40.x** instead of Tendermint v0.34.22.
+- **Served addresses are verified.** Upstream never marks any address as good,
+  so a seed hands out whatever it was told, alive or not. This fork dials
+  addresses before serving them and re-checks its selection periodically.
+- **`seed_disconnect_wait_period` is configurable.** Upstream leaves it at zero
+  in a third-party binary, which drops crawled peers on the first crawl round.
+- **Starts from an existing address book**, with no seeds configured.
+- **Prometheus metrics**, off by default.
+- **No panics**: errors are reported and the process exits with a status code.
+- **Tests**, where the original has none.
 
 ## Quickstart
 
-Build with `make` and start a seed node with the `start` command.
-
-**This will run with defaults and seed/crawl Osmosis**
 ```bash
-tenderseed start
+make build
+./build/tenderseed -home ~/.tenderseed/cosmoshub-4 -chain-id cosmoshub-4 \
+  -seeds "<id>@<host>:<port>" start
 ```
 
-**This will seed/crawl cosmoshub-4**
+The first run writes a config.toml holding every option and its default.
+Edit it and restart. Flags and the TENDERSEED_CHAIN_ID and TENDERSEED_SEEDS
+environment variables override the file.
+
+Show the node identity, which is what other operators need from you:
+
 ```bash
-tenderseed -seeds=bf8328b66dceb4987e5cd94430af66045e59899f@public-seed.cosmos.vitwit.com:26656,cfd785a4224c7940e9a10f6c1ab24c343e923bec@164.68.107.188:26656,d72b3011ed46d783e369fdf8ae2055b99a1e5074@173.249.50.25:26656,ba3bacc714817218562f743178228f23678b2873@public-seed-node.cosmoshub.certus.one:26656,3c7cad4154967a294b3ba1cc752e40e8779640ad@84.201.128.115:26656,366ac852255c3ac8de17e11ae9ec814b8c68bddb@51.15.94.196:26656 -chain-id cosmoshub-4 start
+./build/tenderseed -home ~/.tenderseed/cosmoshub-4 show-node-id
 ```
 
-To view your node id (you will need this for other nodes to connect), invoke the `show-node-id` command.
+One process serves one chain. Run several homes on several ports to serve
+several chains.
 
-> The first run of Tenderseed will generate a node key if one does not exist.
+## Configuration worth knowing about
 
-```shell
-$ tenderseed show-node-id
-```
+Every key has a working default, so a partial config.toml is valid.
 
-## Home Dir
+| key | default | what it does |
+|---|---|---|
+| seed_disconnect_wait_period | 5m | how long a crawled peer stays connected. Upstream leaves this at zero, which drops peers on the first crawl round |
+| peer_check_period | 10m | how often served addresses are re-verified. 0 disables verification |
+| peer_check_workers | 8 | verification dials in parallel |
+| allow_duplicate_ip | true | several peers behind one IP |
+| metrics_listen_addr | empty | Prometheus endpoint, empty disables it |
+| metrics_namespace | cometbft | prefix of exported series |
+| moniker | empty | name announced to peers, empty means chain-id-seed |
 
-All TenderSeed configuration and address book data is stored in the TenderSeed home directory.
+## About AviaOne
 
-The default path is `$HOME/.tenderseed` but you can specify your own path via the `--home` command line argument.
+[AviaOne](https://aviaone.com) has been a professional Cosmos validator for
+over three years, and builds tooling for the ecosystem rather than for itself
+alone.
 
-```shell
-tenderseed --home /some/path/to/home/dir
-```
+Its main contribution is **[ABS, AviaOne BlockChains Service](https://aviaone.com/blockchains-service/)**, a live
+directory covering more than 350 blockchains. ABS turns raw Chain Registry
+data into something operators can actually rely on: RPC endpoints tested every
+three hours and ranked by latency, block explorers rechecked daily so dead
+links disappear, the binary version genuinely running on each network compared
+against what the registry claims, and live network status.
 
-> The default configuration stores the node key in a `config` folder and the address book in a `data` folder within the home folder.
-
-## Configuration
-
-TenderSeed is configured by a [toml](https://github.com/toml-lang/toml) config file found in the tenderseed [home dir](#Home-Dir) as `config/config.toml`
-
-The seed is configured via a [toml](https://github.com/toml-lang/toml) config file. The default configuration file is shown below.
-
-> A first run of Tenderseed will generate a default configuration if one does not exist.
-
-```toml
-# path to address book (relative to tendermint-seed home directory or an absolute path)
-addr_book_file = "data/addrbook.json"
-
-# Set true for strict routability rules
-# Set false for private or local networks
-addr_book_strict = true
-
-# network identifier (todo move to cli flag argument? keeps the config network agnostic)
-chain_id = "some-chain-id"
-
-# Address to listen for incoming connections
-laddr = "tcp://0.0.0.0:26656"
-
-# logging level to filter output ("info", "debug", "error" or "none")
-log_level = "info"
-
-# maximum number of inbound connections
-max_num_inbound_peers = 1000
-
-# maximum number of outbound connections
-max_num_outbound_peers = 10
-
-# maximum size of a message packet payload, in bytes
-max_packet_msg_payload_size = 1024
-
-# path to node_key (relative to tendermint-seed home directory or an absolute path)
-node_key_file = "config/node_key.json"
-
-# seed nodes we can use to discover peers
-seeds = ""
-```
+This fork comes from the same place. Seed nodes are shared infrastructure:
+every chain relies on them to bootstrap, yet the tooling behind them has been
+unmaintained for years. Fixing that helps everyone running a Cosmos network,
+not just us.
 
 ## License
 
-[Blue Oak Model License 1.0.0](https://blueoakcouncil.org/license/1.0.0)
+Blue Oak Model License 1.0.0, unchanged from upstream. See LICENSE.md.
+
+## Credits
+
+binaryholdings and polychainlabs for the original tenderseed. The address
+verification design follows voluzi/cosmoseed, which solved the same problem
+on the CometBFT v2 API.

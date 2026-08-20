@@ -5,18 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
+	"github.com/cometbft/cometbft/libs/log"
+	cmtos "github.com/cometbft/cometbft/libs/os"
 	"github.com/google/subcommands"
-	"github.com/tendermint/tendermint/config"
-	"github.com/tendermint/tendermint/libs/log"
-	tmos "github.com/tendermint/tendermint/libs/os"
-	tmstrings "github.com/tendermint/tendermint/libs/strings"
-	"github.com/tendermint/tendermint/p2p"
-	"github.com/tendermint/tendermint/p2p/pex"
-	"github.com/tendermint/tendermint/version"
 
-	"github.com/binaryholdings/tenderseed/internal/tenderseed"
+	"github.com/AviaOne/tenderseed/internal/tenderseed"
 )
 
 // StartArgs for the start command
@@ -49,115 +43,24 @@ func (args *StartArgs) Execute(_ context.Context, flagSet *flag.FlagSet, _ ...in
 		log.NewSyncWriter(os.Stdout),
 	)
 
-	chainID := args.SeedConfig.ChainID    
-	nodeKeyFilePath := args.SeedConfig.NodeKeyFile
-	addrBookFilePath := args.SeedConfig.AddrBookFile
-
-	if !filepath.IsAbs(nodeKeyFilePath) {
-		nodeKeyFilePath = filepath.Join(args.HomeDir, nodeKeyFilePath)
-	}
-	if !filepath.IsAbs(addrBookFilePath) {
-		addrBookFilePath = filepath.Join(args.HomeDir, addrBookFilePath)
-	}
-
-	tenderseed.MkdirAllPanic(filepath.Dir(nodeKeyFilePath), os.ModePerm)
-	tenderseed.MkdirAllPanic(filepath.Dir(addrBookFilePath), os.ModePerm)
-
-	cfg := config.DefaultP2PConfig()
-	cfg.AllowDuplicateIP = true
-
-	// allow a lot of inbound peers since we disconnect from them quickly in seed mode
-	cfg.MaxNumInboundPeers = args.SeedConfig.MaxNumInboundPeers
-
-	// keep trying to make outbound connections to exchange peering info
-	cfg.MaxNumOutboundPeers = args.SeedConfig.MaxNumOutboundPeers
-
-	// allow increasing maximum size of a message packet payload
-	// because there are some chains that override this and result in larger payloads
-	cfg.MaxPacketMsgPayloadSize = args.SeedConfig.MaxPacketMsgPayloadSize
-
-	nodeKey, err := p2p.LoadOrGenNodeKey(nodeKeyFilePath)
+	seed, err := tenderseed.NewSeed(args.HomeDir, args.SeedConfig, logger)
 	if err != nil {
-		panic(err)
+		fmt.Fprintln(os.Stderr, "tenderseed:", err)
+		return subcommands.ExitFailure
 	}
 
-	logger.Info("tenderseed",
-		"key", nodeKey.ID(),
-		"listen", args.SeedConfig.ListenAddress,
-		"chain", chainID,
-		"log-level", args.SeedConfig.LogLevel,
-		"strict-routing", args.SeedConfig.AddrBookStrict,
-		"max-inbound", args.SeedConfig.MaxNumInboundPeers,
-		"max-outbound", args.SeedConfig.MaxNumOutboundPeers,
-		"max-packet-msg-payload-size", args.SeedConfig.MaxPacketMsgPayloadSize,
-	)
-
-	// TODO(roman) expose per-module log levels in the config
-	logOption, err := log.AllowLevel(args.SeedConfig.LogLevel)
-	if err != nil {
-		panic(err)
-	}
-	filteredLogger := log.NewFilter(logger, logOption)
-
-	protocolVersion :=
-		p2p.NewProtocolVersion(
-			version.P2PProtocol,
-			version.BlockProtocol,
-			0,
-		)
-
-	nodeInfo := p2p.DefaultNodeInfo{
-		ProtocolVersion: protocolVersion,
-		DefaultNodeID:   nodeKey.ID(),
-		ListenAddr:      args.SeedConfig.ListenAddress,
-		Network:         chainID,
-		Version:         "0.0.1",
-		Channels:        []byte{pex.PexChannel},
-		Moniker:         fmt.Sprintf("%s-seed", chainID),
-	}
-
-	addr, err := p2p.NewNetAddressString(p2p.IDAddressString(nodeInfo.DefaultNodeID, nodeInfo.ListenAddr))
-	if err != nil {
-		panic(err)
-	}
-
-	transport := p2p.NewMultiplexTransport(nodeInfo, *nodeKey, p2p.MConnConfig(cfg))
-	if err := transport.Listen(*addr); err != nil {
-		panic(err)
-	}
-
-	book := pex.NewAddrBook(addrBookFilePath, args.SeedConfig.AddrBookStrict)
-	book.SetLogger(filteredLogger.With("module", "book"))
-
-	pexReactor := pex.NewReactor(book, &pex.ReactorConfig{
-		SeedMode: true,
-		Seeds:    tmstrings.SplitAndTrim(args.SeedConfig.Seeds, ",", " "),
-	})
-	pexReactor.SetLogger(filteredLogger.With("module", "pex"))
-
-	sw := p2p.NewSwitch(cfg, transport)
-	sw.SetLogger(filteredLogger.With("module", "switch"))
-	sw.SetNodeKey(nodeKey)
-	sw.SetAddrBook(book)
-	sw.AddReactor("pex", pexReactor)
-
-	// last
-	sw.SetNodeInfo(nodeInfo)
-
-	tmos.TrapSignal(logger, func() {
+	cmtos.TrapSignal(logger, func() {
 		logger.Info("shutting down...")
-		book.Save()
-		err := sw.Stop()
-		if err != nil {
-			panic(err)
+		if err := seed.Stop(); err != nil {
+			logger.Error("error while shutting down", "err", err)
 		}
 	})
 
-	err = sw.Start()
-	if err != nil {
-		panic(err)
+	if err := seed.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "tenderseed:", err)
+		return subcommands.ExitFailure
 	}
 
-	sw.Wait()
+	seed.Wait()
 	return subcommands.ExitSuccess
 }

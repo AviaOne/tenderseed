@@ -19,7 +19,11 @@ lint:
 	@echo "--> Running linter"
 	@golangci-lint run ./...
 
+# run the bench: make bench HOME_DIR=/path/to/home SECONDS=300
+bench: build
+	@scripts/bench.sh $(HOME_DIR) $(SECONDS)
+
 clean:
 	rm -rf build
 
-.PHONY: all clean test lint build-linux build
+.PHONY: all bench clean test lint build-linux build
