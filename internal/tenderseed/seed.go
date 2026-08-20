@@ -165,6 +165,10 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 	s.AddrBook = pex.NewAddrBook(addrBookFilePath, s.Config.AddrBookStrict)
 	s.AddrBook.SetLogger(s.FilteredLogger.With("module", "book"))
 
+	// Never dial or serve ourselves. A full node does this in node/setup.go;
+	// a seed that skips it can hand its own address to its clients.
+	s.AddrBook.AddOurAddress(addr)
+
 	s.Reactor = NewSeedReactor(s.AddrBook, &pex.ReactorConfig{
 		SeedMode: true,
 		Seeds:    cmtstrings.SplitAndTrim(s.Config.Seeds, ",", " "),
