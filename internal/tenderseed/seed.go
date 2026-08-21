@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -42,6 +41,10 @@ type Seed struct {
 
 // NewSeed builds every component of a seed node and wires them together.
 // It listens on the configured address but does not start the switch.
+// Version is the software version announced to peers during the handshake.
+// Override it at build time with -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=<value>".
+var Version = "2.0.0"
+
 func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error) {
 	s := &Seed{
 		Config:  seedConfig,
@@ -64,10 +67,10 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		addrBookFilePath = filepath.Join(homeDir, addrBookFilePath)
 	}
 
-	if err := MkdirAll(filepath.Dir(nodeKeyFilePath), os.ModePerm); err != nil {
+	if err := MkdirAll(filepath.Dir(nodeKeyFilePath), 0o750); err != nil {
 		return nil, err
 	}
-	if err := MkdirAll(filepath.Dir(addrBookFilePath), os.ModePerm); err != nil {
+	if err := MkdirAll(filepath.Dir(addrBookFilePath), 0o750); err != nil {
 		return nil, err
 	}
 
@@ -120,7 +123,6 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		"peer-check-workers", checkWorkers,
 	)
 
-	// TODO(roman) expose per-module log levels in the config
 	logOption, err := log.AllowLevel(s.Config.LogLevel)
 	if err != nil {
 		return nil, err
@@ -147,7 +149,7 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		DefaultNodeID:   nodeKey.ID(),
 		ListenAddr:      s.Config.ListenAddress,
 		Network:         chainID,
-		Version:         "0.0.1",
+		Version:         Version,
 		Channels:        channels,
 		Moniker:         moniker,
 	}
@@ -165,8 +167,11 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 	s.AddrBook = pex.NewAddrBook(addrBookFilePath, s.Config.AddrBookStrict)
 	s.AddrBook.SetLogger(s.FilteredLogger.With("module", "book"))
 
-	// Never dial or serve ourselves. A full node does this in node/setup.go;
-	// a seed that skips it can hand its own address to its clients.
+	// Register our own address, as a full node does in node/setup.go; a seed
+	// that skips it can hand its own address to its clients. With the default
+	// laddr this cannot match the address peers announce us under: what
+	// actually keeps verification from dialling the seed is the node ID test
+	// in verify.
 	s.AddrBook.AddOurAddress(addr)
 
 	s.Reactor = NewSeedReactor(s.AddrBook, &pex.ReactorConfig{

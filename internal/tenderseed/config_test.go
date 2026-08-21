@@ -20,7 +20,7 @@ func writeConfig(t *testing.T, content string) string {
 // Real deployments ship files like this, so partial files must keep loading.
 const partialConfig = `addr_book_file = "data/addrbook.json"
 addr_book_strict = true
-chain_id = "cosmoshub-4"
+chain_id = "test-chain-1"
 laddr = "tcp://0.0.0.0:26656"
 max_num_inbound_peers = 50
 max_num_outbound_peers = 10
@@ -30,13 +30,13 @@ node_key_file = "config/node_key.json"
 // A nine-key config: log_level is absent.
 const fullConfig = `addr_book_file = "data/addrbook.json"
 addr_book_strict = true
-chain_id = "atomone-1"
+chain_id = "test-chain-2"
 laddr = "tcp://0.0.0.0:26656"
 max_num_inbound_peers = 500
 max_num_outbound_peers = 200
 max_packet_msg_payload_size = 1024
 node_key_file = "config/node_key.json"
-seeds = "8542cd7e6bf9d260fef543bc49e59be5a3fa9074@seed.publicnode.com:26656"
+seeds = "0000000000000000000000000000000000000000@seed.example.com:26656"
 `
 
 func TestLoadPartialConfig(t *testing.T) {
@@ -44,8 +44,8 @@ func TestLoadPartialConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading config: %v", err)
 	}
-	if config.ChainID != "cosmoshub-4" {
-		t.Errorf("ChainID = %q, want cosmoshub-4", config.ChainID)
+	if config.ChainID != "test-chain-1" {
+		t.Errorf("ChainID = %q, want test-chain-1", config.ChainID)
 	}
 	if config.MaxNumInboundPeers != 50 {
 		t.Errorf("MaxNumInboundPeers = %d, want 50", config.MaxNumInboundPeers)
@@ -79,8 +79,8 @@ func TestLoadFullConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading config: %v", err)
 	}
-	if config.ChainID != "atomone-1" {
-		t.Errorf("ChainID = %q, want atomone-1", config.ChainID)
+	if config.ChainID != "test-chain-2" {
+		t.Errorf("ChainID = %q, want test-chain-2", config.ChainID)
 	}
 	if config.ListenAddress != "tcp://0.0.0.0:26656" {
 		t.Errorf("ListenAddress = %q, want tcp://0.0.0.0:26656", config.ListenAddress)

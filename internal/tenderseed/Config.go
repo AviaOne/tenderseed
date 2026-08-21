@@ -35,10 +35,10 @@ const DefaultPeerCheckWorkers = 8
 //nolint:lll
 type Config struct {
 	ListenAddress            string `toml:"laddr" comment:"Address to listen for incoming connections"`
-	ChainID                  string `toml:"chain_id" comment:"network identifier (todo move to cli flag argument? keeps the config network agnostic)"`
+	ChainID                  string `toml:"chain_id" comment:"network identifier of the chain this seed serves"`
 	LogLevel                 string `toml:"log_level" comment:"logging level to filter output (\"info\", \"debug\", \"error\" or \"none\")"`
-	NodeKeyFile              string `toml:"node_key_file" comment:"path to node_key (relative to tendermint-seed home directory or an absolute path)"`
-	AddrBookFile             string `toml:"addr_book_file" comment:"path to address book (relative to tendermint-seed home directory or an absolute path)"`
+	NodeKeyFile              string `toml:"node_key_file" comment:"path to node_key (relative to the seed home directory (-home) or an absolute path)"`
+	AddrBookFile             string `toml:"addr_book_file" comment:"path to address book (relative to the seed home directory (-home) or an absolute path)"`
 	AddrBookStrict           bool   `toml:"addr_book_strict" comment:"Set true for strict routability rules\n Set false for private or local networks"`
 	MaxNumInboundPeers       int    `toml:"max_num_inbound_peers" comment:"maximum number of inbound connections"`
 	MaxNumOutboundPeers      int    `toml:"max_num_outbound_peers" comment:"maximum number of outbound connections"`

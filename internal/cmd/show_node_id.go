@@ -46,7 +46,7 @@ func (args *ShowNodeIDArgs) Execute(_ context.Context, flagSet *flag.FlagSet, _ 
 		nodeKeyFilePath = filepath.Join(args.HomeDir, nodeKeyFilePath)
 	}
 
-	if err := tenderseed.MkdirAll(filepath.Dir(nodeKeyFilePath), os.ModePerm); err != nil {
+	if err := tenderseed.MkdirAll(filepath.Dir(nodeKeyFilePath), 0o750); err != nil {
 		fmt.Fprintln(os.Stderr, "tenderseed:", err)
 		return subcommands.ExitFailure
 	}

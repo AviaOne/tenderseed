@@ -21,15 +21,18 @@ func main() {
 	}
 
 	homeDir := flag.String("home", filepath.Join(userHomeDir, ".tenderseed"), "path to tenderseed home directory")
-	configFile := flag.String("config", "config/config.toml", "path to configuration file within home directory")
+	configFile := flag.String("config", "config/config.toml", "path to config.toml, relative to home or absolute")
 	chainID := flag.String("chain-id", "", "chain id")
 	seeds := flag.String("seeds", "", "comma separated list of seeds")
 
 	// parse top level flags
 	flag.Parse()
 
-	configFilePath := filepath.Join(*homeDir, *configFile)
-	if err := tenderseed.MkdirAll(filepath.Dir(configFilePath), os.ModePerm); err != nil {
+	configFilePath := *configFile
+	if !filepath.IsAbs(configFilePath) {
+		configFilePath = filepath.Join(*homeDir, configFilePath)
+	}
+	if err := tenderseed.MkdirAll(filepath.Dir(configFilePath), 0o750); err != nil {
 		fail(err)
 	}
 
@@ -38,19 +41,19 @@ func main() {
 		fail(err)
 	}
 
-	// Get chain-id, seeds from ENV
-	env_chainid, env_chainid_ok := os.LookupEnv("TENDERSEED_CHAIN_ID")
-	env_seeds, env_seeds_ok := os.LookupEnv("TENDERSEED_SEEDS")
+	// Get chain-id, seeds from ENV. An empty variable counts as unset.
+	env_chainid := os.Getenv("TENDERSEED_CHAIN_ID")
+	env_seeds := os.Getenv("TENDERSEED_SEEDS")
 
 	// Set chain-id, seeds from ARGS or ENV
 	if *chainID != "" {
 		seedConfig.ChainID = *chainID
-	} else if env_chainid_ok {
+	} else if env_chainid != "" {
 		seedConfig.ChainID = env_chainid
 	}
 	if *seeds != "" {
 		seedConfig.Seeds = *seeds
-	} else if env_seeds_ok {
+	} else if env_seeds != "" {
 		seedConfig.Seeds = env_seeds
 	}
 
