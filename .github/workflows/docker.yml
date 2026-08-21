@@ -1,8 +1,11 @@
 name: docker
 
-# Manual only. Nothing is published before the fork has been validated on a
-# real server, so this workflow never fires on a push.
+# Fires on a version tag only, never on a push to a branch, so no image is ever
+# built from an intermediate state. Can also be run by hand.
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -30,6 +33,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.IMAGE }}:latest
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:latest

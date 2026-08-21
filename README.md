@@ -333,7 +333,18 @@ sudo journalctl -u tenderseed-${CHAIN_ID} --no-hostname -f
 - Docker installed.
 - One open TCP port per chain served.
 
-### Step 1 - Build the image
+### Step 1 - Get the image
+
+Pull the published image, which is built for amd64 and arm64:
+
+```bash
+docker pull ghcr.io/aviaone/tenderseed:latest
+docker tag ghcr.io/aviaone/tenderseed:latest tenderseed:latest
+```
+
+Pin a version instead of `latest` if you prefer: `ghcr.io/aviaone/tenderseed:v2.0.0`.
+
+Or build it yourself from source:
 
 ```bash
 git clone https://github.com/AviaOne/tenderseed && cd tenderseed
