@@ -28,14 +28,15 @@ affect you right now.
 | The address book is never qualified. `MarkGood` is never called, so every entry stays in a *new* bucket and the 70% bias toward *old* buckets has nothing to select | Your seed hands out addresses that may be long dead. It serves noise instead of peers | Addresses are dialled before being served, and the served selection is re-checked on a timer |
 | `SeedDisconnectWaitPeriod` is never set, so it is zero. Every crawled peer is dropped on the first crawl round, often before it has answered | Your address book barely grows | The value is exposed, documented, and defaults to 5 minutes |
 
-**The measurement that matters.** Two seeds running the upstream binary for years
-held **4 and 6 addresses**. The same chain, served by this fork, reached **1262
-addresses in two hours**, of which 27 were verified reachable and promoted.
+**The measurement that matters.** Two production seeds ran the upstream binary
+for years and held **4 and 6 addresses**. Only the binary was replaced with this
+fork: same machine, same configuration, same address book files, same chains.
+Four hours later those two seeds held **1263 and 568 addresses**, of which 28 and
+40 were verified reachable and promoted.
 
-The correlation is strong and the mechanism is understood, but it has not been
-isolated in a controlled experiment: `addr_book_strict` may also reject entries,
-and no side-by-side run against a third-party seed on the original binary was
-performed. What is measured is stated; nothing more is claimed.
+That is a before and after on the same seeds rather than a benchmark, and one
+reservation remains: `addr_book_strict` also rejects entries, so it may account
+for part of the gap. What is measured is stated; nothing more is claimed.
 
 ---
 
@@ -177,7 +178,7 @@ sudo -u tenderseed tenderseed -home /home/tenderseed/.tenderseed/${CHAIN_ID} sho
 That command does two things: it creates `config/config.toml` and
 `config/node_key.json` if they do not exist, and it prints your node identity.
 
-The identity looks like `7733d64e020b3897d94ba4de36a1416ddc9bd640`. Other
+The identity looks like `0123456789abcdef0123456789abcdef01234567`. Other
 operators need it to reach your seed, in the form
 `<node-id>@<your-host>:<port>`.
 

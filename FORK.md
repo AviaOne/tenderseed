@@ -224,16 +224,27 @@ disk **before** the switch stops, and the process exits without a goroutine dump
 
 An inbound peer connected to it received **611 addresses in 90 seconds**.
 
-### 5.3 The observation that started this
+### 5.3 The before and after that started this
 
-Two seeds running the upstream binary for years held **4 and 6 addresses**. The
-most likely explanation is section 2.3: crawled peers dropped on the first round.
+Two production seeds ran the upstream binary for years and held **4 and 6
+addresses**, barely more than the seeds listed in their own configuration.
 
-**Stated honestly**: the correlation is strong, the causality is not isolated.
-`addr_book_strict` may reject some addresses, and no controlled comparison
-against a third-party seed on the original binary was run. What is measured is
-two nearly empty books on one side and more than a thousand addresses on the
-other. No single cause is asserted.
+Only the binary was replaced. Same machine, same two chains, same node identity,
+same configuration values, same address book files left in place. Four hours
+later:
+
+| chain | before | after 4 hours | promoted |
+|---|---|---|---|
+| first chain | 4 | **1263** | 28 |
+| second chain | 6 | **568** | 40 |
+
+The promotion rate differs widely between the two, 2.2 and 7.0 percent, which is
+stated without an explanation because none was measured.
+
+**Stated honestly**: this is a before and after on the same seeds, not a
+controlled benchmark. `addr_book_strict` also rejects addresses and may account
+for part of the gap. What is measured is two nearly empty books on one side and
+more than eighteen hundred addresses across two chains on the other.
 
 ---
 
