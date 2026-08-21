@@ -2,7 +2,7 @@ name: go
 
 on:
   push:
-    branches: [master, aviaone]
+    branches: [master]
   pull_request:
 
 jobs:

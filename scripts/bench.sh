@@ -13,7 +13,7 @@ binary=${3:-./build/tenderseed}
 log=$(mktemp)
 
 book="${home}/data/addrbook.json"
-count() { [ -f "${book}" ] && grep -o "$1" "${book}" | wc -l || echo 0; }
+count() { grep -o -- "$1" "${book}" 2>/dev/null | wc -l || true; }
 before_addrs=$(count '"addr"')
 before_good=$(count '"bucket_type": *2')
 

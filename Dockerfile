@@ -1,28 +1,14 @@
-FROM golang:1.19-alpine3.16 as builder
-
-# Set workdir
+FROM golang:1.25-alpine3.22 AS builder
 WORKDIR /sources
-
-# Add source files
 COPY . .
-
-# Install minimum necessary dependencies
-RUN apk add --no-cache make gcc libc-dev
-
+RUN apk add --no-cache make
 RUN make build
 
-# ----------------------------
-
-FROM alpine:3.16
-
-COPY --from=builder /sources/build/ /usr/local/bin/
-
-RUN addgroup tendermint && adduser -S -G tendermint tendermint -h /data
-
-USER tendermint
-
+FROM alpine:3.22
+RUN addgroup -S tenderseed && adduser -S -G tenderseed tenderseed -h /data
+COPY --from=builder /sources/build/tenderseed /usr/local/bin/tenderseed
+USER tenderseed
 WORKDIR /data
-
 EXPOSE 26656
-
-ENTRYPOINT ["tenderseed", "start"]
+ENTRYPOINT ["tenderseed", "-home", "/data"]
+CMD ["start"]
