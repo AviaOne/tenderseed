@@ -1,6 +1,7 @@
 package tenderseed
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -184,7 +185,8 @@ func (r *SeedReactor) verify(addr *p2p.NetAddress) {
 		return
 	}
 	if err := sw.DialPeerWithAddress(addr); err != nil {
-		if _, ok := err.(p2p.ErrCurrentlyDialingOrExistingAddress); ok {
+		var dialing p2p.ErrCurrentlyDialingOrExistingAddress
+		if errors.As(err, &dialing) {
 			return
 		}
 		r.book.MarkAttempt(addr)
