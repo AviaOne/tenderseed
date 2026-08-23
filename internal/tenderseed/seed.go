@@ -211,7 +211,13 @@ func (s *Seed) Start() error {
 			}
 		}()
 	}
-	return s.Switch.Start()
+	if err := s.Switch.Start(); err != nil {
+		// The metrics goroutine is already running; the switch is not.
+		// Stop is not usable here, it also touches the address book.
+		s.stopMetrics()
+		return err
+	}
+	return nil
 }
 
 // Wait blocks until the switch stops.
@@ -222,6 +228,12 @@ func (s *Seed) Wait() {
 // Stop saves the address book to disk and stops the switch.
 func (s *Seed) Stop() error {
 	s.AddrBook.Save()
+	s.stopMetrics()
+	return s.Switch.Stop()
+}
+
+// stopMetrics shuts the metrics server down if one is running.
+func (s *Seed) stopMetrics() {
 	if s.metrics != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -229,5 +241,4 @@ func (s *Seed) Stop() error {
 			s.Logger.Error("could not stop metrics server", "err", err)
 		}
 	}
-	return s.Switch.Stop()
 }
