@@ -172,11 +172,14 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 	s.AddrBook.SetLogger(s.FilteredLogger.With("module", "book"))
 
 	// Register our own address, as a full node does in node/setup.go; a seed
-	// that skips it can hand its own address to its clients. With the default
-	// laddr this cannot match the address peers announce us under: what
-	// actually keeps verification from dialling the seed is the node ID test
-	// in verify.
-	s.AddrBook.AddOurAddress(addr)
+	// that skips it can hand its own address to its clients. The book keys
+	// ourAddrs on the address string, so an unspecified laddr such as
+	// 0.0.0.0 could never match what peers announce us under; registering it
+	// would only store an entry that never matches. What keeps verification
+	// from dialling the seed is the node ID test in verify.
+	if !addr.IP.IsUnspecified() {
+		s.AddrBook.AddOurAddress(addr)
+	}
 
 	s.Reactor = NewSeedReactor(s.AddrBook, &pex.ReactorConfig{
 		SeedMode: true,
