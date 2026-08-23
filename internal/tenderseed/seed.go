@@ -89,6 +89,10 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		return nil, err
 	}
 
+	// SeedMode, ListenAddress, Seeds and PersistentPeers are left at their
+	// defaults on purpose: CometBFT v0.40.0 never reads them from P2PConfig.
+	// Seed mode and the seed list reach the PEX reactor through
+	// pex.ReactorConfig below, and listening is done by Transport.Listen.
 	p2pConfig := config.DefaultP2PConfig()
 	p2pConfig.AllowDuplicateIP = s.Config.AllowDuplicateIP
 
