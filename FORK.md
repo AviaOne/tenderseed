@@ -200,9 +200,11 @@ Same duration, same seeds, same chain, 180 seconds:
 | before verification, i.e. the behaviour of the original and of all 11 forks | 1189 | **0** | 1189 |
 | with verification | 1184 | **45** | 1139 |
 
-Qualified addresses went from zero to 45 without slowing collection down.
-Roughly 12% of dialled addresses answered, which is itself a useful figure: most
-addresses circulating on a network are not reachable.
+Qualified addresses went from zero to 45, that is 45 out of the 1184 addresses
+held in the book, without slowing collection down. Against a different
+denominator, roughly 12% of the addresses actually dialled answered, which is
+itself a useful figure: most addresses circulating on a network are not
+reachable.
 
 Collection is also faster, because verification dials run in parallel while the
 upstream crawl is sequential.
@@ -238,8 +240,9 @@ later:
 | first chain | 4 | **1263** | 28 |
 | second chain | 6 | **568** | 40 |
 
-The promotion rate differs widely between the two, 2.2 and 7.0 percent, which is
-stated without an explanation because none was measured.
+The promotion rate, promoted addresses over the book total of the same seed,
+differs widely between the two, 28 out of 1263 and 40 out of 568, that is 2.2
+and 7.0 percent, stated without an explanation because none was measured.
 
 **Stated honestly**: this is a before and after on the same seeds, not a
 controlled benchmark. `addr_book_strict` also rejects addresses and may account
