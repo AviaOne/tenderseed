@@ -69,6 +69,7 @@ func main() {
 		HomeDir:    *homeDir,
 		SeedConfig: *seedConfig,
 	}, "")
+	subcommands.Register(&cmd.VersionArgs{}, "")
 
 	ctx := context.Background()
 	os.Exit(int(subcommands.Execute(ctx)))
