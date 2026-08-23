@@ -32,7 +32,7 @@ func main() {
 	if !filepath.IsAbs(configFilePath) {
 		configFilePath = filepath.Join(*homeDir, configFilePath)
 	}
-	if err := tenderseed.MkdirAll(filepath.Dir(configFilePath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(configFilePath), 0o750); err != nil {
 		fail(err)
 	}
 

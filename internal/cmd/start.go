@@ -22,7 +22,7 @@ type StartArgs struct {
 // Name returns the command name
 func (*StartArgs) Name() string { return "start" }
 
-// Synopsis returns a ummary for the command
+// Synopsis returns a summary for the command
 func (*StartArgs) Synopsis() string { return "start tenderseed" }
 
 // Usage returns full usage for the command

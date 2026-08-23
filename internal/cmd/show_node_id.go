@@ -22,7 +22,7 @@ type ShowNodeIDArgs struct {
 // Name returns the command name
 func (*ShowNodeIDArgs) Name() string { return "show-node-id" }
 
-// Synopsis returns a ummary for the command
+// Synopsis returns a summary for the command
 func (*ShowNodeIDArgs) Synopsis() string { return "show the node id" }
 
 // Usage returns full usage for the command
@@ -46,7 +46,7 @@ func (args *ShowNodeIDArgs) Execute(_ context.Context, flagSet *flag.FlagSet, _ 
 		nodeKeyFilePath = filepath.Join(args.HomeDir, nodeKeyFilePath)
 	}
 
-	if err := tenderseed.MkdirAll(filepath.Dir(nodeKeyFilePath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(nodeKeyFilePath), 0o750); err != nil {
 		fmt.Fprintln(os.Stderr, "tenderseed:", err)
 		return subcommands.ExitFailure
 	}

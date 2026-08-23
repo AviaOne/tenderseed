@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -67,10 +68,10 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		addrBookFilePath = filepath.Join(homeDir, addrBookFilePath)
 	}
 
-	if err := MkdirAll(filepath.Dir(nodeKeyFilePath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(nodeKeyFilePath), 0o750); err != nil {
 		return nil, err
 	}
-	if err := MkdirAll(filepath.Dir(addrBookFilePath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(addrBookFilePath), 0o750); err != nil {
 		return nil, err
 	}
 
