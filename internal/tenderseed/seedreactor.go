@@ -102,6 +102,13 @@ func (r *SeedReactor) Stop() error {
 func (r *SeedReactor) Receive(e p2p.Envelope) {
 	r.Reactor.Receive(e)
 
+	// A zero peer_check_period disables verification, so no worker drains the
+	// queue. Drop the addresses here rather than fill it once and then log
+	// every address that follows.
+	if r.period == 0 {
+		return
+	}
+
 	msg, ok := e.Message.(*tmp2p.PexAddrs)
 	if !ok {
 		return
