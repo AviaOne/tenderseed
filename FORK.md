@@ -259,7 +259,7 @@ otherwise:
 
 1. the binary is named `tenderseed`;
 2. top-level flags `-home`, `-config`, `-chain-id`, `-seeds`;
-3. subcommands `start` and `show-node-id`;
+3. subcommands `start` and `show-node-id`, with `version` added;
 4. the home layout: `config/config.toml`, `config/node_key.json`, and the book at
    `data/addrbook.json`;
 5. **a partial `config.toml` is still accepted.** Decoding starts from the
@@ -293,8 +293,8 @@ Decided and assumed:
 - **Every Go file passes `gofmt`**, which was true of none of them upstream.
 - **The seed registers its own address in its book**, and the verification path
   skips any address carrying its own node ID, so verification never dials the
-  seed itself. Upstream
-  does this for a full node but Tenderseed never did. The book compares the full
-  address string when checking for itself, so with the default `laddr` of
-  `0.0.0.0` that comparison cannot match the address peers advertise for the
-  seed; the node ID check is what actually holds.
+  seed itself. Upstream does this for a full node but Tenderseed never did. The
+  book compares the full address string when checking for itself, so an
+  unspecified `laddr` could never match the address peers advertise for the
+  seed. Such an address is therefore not registered at all, and the node ID
+  check is what actually holds.

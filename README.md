@@ -72,9 +72,11 @@ evidence behind each one.
 12. **Documentation.** An accurate README. Upstream still advertises limits its
     own code does not apply, and describes itself as a fork of a different
     project.
-13. **Self-reference fix.** The seed registers its own address in its book, and
-    the verification path skips any address carrying its own node ID, so
-    verification never dials the seed itself.
+13. **Self-reference fix.** The seed registers its own address in its book when
+    `laddr` names a real address, and the verification path skips any address
+    carrying its own node ID, so verification never dials the seed itself. An
+    unspecified `laddr` such as `0.0.0.0` is not registered, because the book
+    compares full address strings and such an entry could never match.
 
 ---
 
@@ -324,6 +326,33 @@ sudo systemctl status tenderseed-${CHAIN_ID}
 sudo journalctl -u tenderseed-${CHAIN_ID} --no-hostname -f
 ```
 
+### Updating to a newer version
+
+Only the binary is replaced. Your node identity, your configuration and your
+address book are files on disk that the update never touches, so your seed
+keeps the same address and the same peers.
+
+```bash
+export CHAIN_ID=cosmoshub-4
+sudo -u tenderseed bash -c "cd ~/tenderseed && git fetch --tags && git checkout v2.1.0 && make build"
+sudo systemctl stop tenderseed-${CHAIN_ID}
+sudo install -m 0755 /home/tenderseed/tenderseed/build/tenderseed /usr/local/bin/tenderseed
+sudo systemctl start tenderseed-${CHAIN_ID}
+tenderseed version
+```
+
+Replace `v2.1.0` with the tag you are moving to, and repeat the two
+systemctl lines for every chain you serve.
+
+Left untouched by the update, on every chain home:
+
+- `config/node_key.json`, so your seed keeps the identity other operators
+  reference;
+- `config/config.toml`, which is only generated when it does not exist, so your
+  settings survive. New keys added by a release fall back to their default
+  until you add them by hand;
+- `data/addrbook.json`, so the seed restarts with the peers it already knew.
+
 ---
 
 ## Installation with Docker
@@ -404,6 +433,22 @@ docker rm -f tenderseed-${CHAIN_ID}
 docker build -t tenderseed:latest .
 ```
 
+### Updating to a newer version
+
+Pull the new image, drop the container, start it again on the same bind
+mount. The mounted directory holds `config/node_key.json`,
+`config/config.toml` and `data/addrbook.json`, none of which the update
+touches, so the seed keeps its identity, its settings and its peers.
+
+```bash
+docker pull ghcr.io/aviaone/tenderseed:v2.1.0
+docker tag ghcr.io/aviaone/tenderseed:v2.1.0 tenderseed:latest
+docker rm -f tenderseed-${CHAIN_ID}
+docker run --rm tenderseed:latest version
+```
+
+Then run the container again with the command from step 4.
+
 ---
 
 ## Configuration
@@ -418,7 +463,7 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 | `laddr` | `tcp://0.0.0.0:26656` | address and port to listen on for incoming connections |
 | `chain_id` | empty | network identifier of the chain this seed serves |
 | `seeds` | empty | comma-separated `<node-id>@<host>:<port>` list used to bootstrap discovery. May be emptied once the address book is populated |
-| `log_level` | `info` | `info`, `debug`, `error` or `none` |
+| `log_level` | `info` | `debug`, `info`, `warn`, `error` or `none`. It applies to the seed own lines as well, so `none` leaves only the startup banner |
 | `node_key_file` | `config/node_key.json` | path to the node identity, relative to the home directory or absolute |
 | `addr_book_file` | `data/addrbook.json` | path to the address book, relative to the home directory or absolute |
 | `addr_book_strict` | `true` | strict routability rules. Set `false` for private or local networks, otherwise non-routable addresses are rejected |
@@ -455,13 +500,21 @@ TENDERSEED_CHAIN_ID
 TENDERSEED_SEEDS
 ```
 
-Subcommands: `start` and `show-node-id`.
+Subcommands: `start`, `show-node-id` and `version`.
 
 ### Version announced to peers
 
-The seed announces its software version during the p2p handshake. A binary
-built from this repository announces `2.0.0`. Override it at build time if you
-package your own build:
+The seed announces its software version during the p2p handshake. Read what a
+binary announces with:
+
+```bash
+tenderseed version
+```
+
+A release binary announces the tag it was built from, without the leading
+`v`: a `v2.1.0` tag produces a binary announcing `2.1.0`. A binary built
+straight from a working copy announces the value compiled into the source.
+Override it at build time if you package your own build:
 
 ```bash
 go build -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=2.0.1-mybuild" ./cmd/tenderseed
