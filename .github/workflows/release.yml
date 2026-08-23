@@ -1,0 +1,56 @@
+name: release
+
+# Fires on a version tag only. Builds the same artefacts that were published by
+# hand for v2.0.0: one flat tar.gz per architecture holding a single tenderseed
+# binary, plus SHA256SUMS over the two archives.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Version from the tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Build and package
+        run: |
+          set -eu
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            rm -rf build
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
+              -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=${VERSION}" \
+              -o ./build/tenderseed ./cmd/tenderseed
+            chmod 0755 ./build/tenderseed
+            tar -czf "dist/tenderseed-${GITHUB_REF_NAME}-linux-${arch}.tar.gz" -C build tenderseed
+          done
+          cd dist && sha256sum tenderseed-*.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes
+        run: |
+          set -eu
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then
+            echo "NOTES=--notes-file $notes" >> "$GITHUB_ENV"
+          else
+            echo "NOTES=--generate-notes" >> "$GITHUB_ENV"
+          fi
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Tenderseed $GITHUB_REF_NAME" \
+            $NOTES \
+            dist/tenderseed-*.tar.gz dist/SHA256SUMS
