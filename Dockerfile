@@ -2,7 +2,8 @@ FROM golang:1.25-alpine3.22 AS builder
 WORKDIR /sources
 COPY . .
 RUN apk add --no-cache make
-RUN make build
+ARG VERSION=
+RUN make build VERSION=$VERSION
 
 FROM alpine:3.22
 RUN addgroup -S tenderseed && adduser -S -G tenderseed tenderseed -h /data
