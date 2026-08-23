@@ -36,7 +36,7 @@ const DefaultPeerCheckWorkers = 8
 type Config struct {
 	ListenAddress            string `toml:"laddr" comment:"Address to listen for incoming connections"`
 	ChainID                  string `toml:"chain_id" comment:"network identifier of the chain this seed serves"`
-	LogLevel                 string `toml:"log_level" comment:"logging level to filter output (\"info\", \"debug\", \"error\" or \"none\")"`
+	LogLevel                 string `toml:"log_level" comment:"logging level to filter output (\"debug\", \"info\", \"warn\", \"error\" or \"none\")"`
 	NodeKeyFile              string `toml:"node_key_file" comment:"path to node_key (relative to the seed home directory (-home) or an absolute path)"`
 	AddrBookFile             string `toml:"addr_book_file" comment:"path to address book (relative to the seed home directory (-home) or an absolute path)"`
 	AddrBookStrict           bool   `toml:"addr_book_strict" comment:"Set true for strict routability rules\n Set false for private or local networks"`
@@ -47,7 +47,7 @@ type Config struct {
 	SeedDisconnectWaitPeriod string `toml:"seed_disconnect_wait_period" comment:"how long a crawled peer stays connected before being disconnected, as a duration (\"5m\", \"30s\", \"1h\")"`
 	AllowDuplicateIP         bool   `toml:"allow_duplicate_ip" comment:"allow multiple peers from the same IP address"`
 	PeerCheckPeriod          string `toml:"peer_check_period" comment:"how often served addresses are re-verified, as a duration; 0 disables verification"`
-	PeerCheckWorkers         int    `toml:"peer_check_workers" comment:"how many verification dials run in parallel"`
+	PeerCheckWorkers         int    `toml:"peer_check_workers" comment:"how many verification dials run in parallel; 0 means the default of 8, it does not disable anything"`
 	MetricsListenAddress     string `toml:"metrics_listen_addr" comment:"address to serve Prometheus metrics on; empty disables them"`
 	Moniker                  string `toml:"moniker" comment:"name announced to peers; empty means <chain_id>-seed"`
 	MetricsNamespace         string `toml:"metrics_namespace" comment:"prefix of every exported metric series"`
