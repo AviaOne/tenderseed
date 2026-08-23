@@ -207,7 +207,7 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 // Start starts the switch, which starts the address book and the PEX reactor.
 func (s *Seed) Start() error {
 	if addr := s.Config.MetricsListenAddress; addr != "" {
-		s.metrics = newMetricsServer(addr, s.Logger)
+		s.metrics = newMetricsServer(addr)
 		go func() {
 			s.FilteredLogger.Info("serving metrics", "addr", addr)
 			if err := s.metrics.ListenAndServe(); err != nil && err != http.ErrServerClosed {
