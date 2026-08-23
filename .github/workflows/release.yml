@@ -29,7 +29,7 @@ jobs:
           mkdir -p dist
           for arch in amd64 arm64; do
             rm -rf build
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
               -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=${VERSION}" \
               -o ./build/tenderseed ./cmd/tenderseed
             chmod 0755 ./build/tenderseed
