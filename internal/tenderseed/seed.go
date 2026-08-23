@@ -108,6 +108,12 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 	}
 	s.NodeKey = nodeKey
 
+	logOption, err := log.AllowLevel(s.Config.LogLevel)
+	if err != nil {
+		return nil, err
+	}
+	s.FilteredLogger = log.NewFilter(logger, logOption)
+
 	logger.Info("tenderseed",
 		"key", nodeKey.ID(),
 		"listen", s.Config.ListenAddress,
@@ -122,12 +128,6 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		"peer-check-period", checkPeriod,
 		"peer-check-workers", checkWorkers,
 	)
-
-	logOption, err := log.AllowLevel(s.Config.LogLevel)
-	if err != nil {
-		return nil, err
-	}
-	s.FilteredLogger = log.NewFilter(logger, logOption)
 
 	protocolVersion := p2p.NewProtocolVersion(
 		version.P2PProtocol,
@@ -205,9 +205,9 @@ func (s *Seed) Start() error {
 	if addr := s.Config.MetricsListenAddress; addr != "" {
 		s.metrics = newMetricsServer(addr, s.Logger)
 		go func() {
-			s.Logger.Info("serving metrics", "addr", addr)
+			s.FilteredLogger.Info("serving metrics", "addr", addr)
 			if err := s.metrics.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				s.Logger.Error("metrics server stopped", "err", err)
+				s.FilteredLogger.Error("metrics server stopped", "err", err)
 			}
 		}()
 	}
@@ -238,7 +238,7 @@ func (s *Seed) stopMetrics() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := s.metrics.Shutdown(ctx); err != nil {
-			s.Logger.Error("could not stop metrics server", "err", err)
+			s.FilteredLogger.Error("could not stop metrics server", "err", err)
 		}
 	}
 }

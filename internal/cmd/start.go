@@ -49,10 +49,10 @@ func (args *StartArgs) Execute(_ context.Context, flagSet *flag.FlagSet, _ ...in
 		return subcommands.ExitFailure
 	}
 
-	cmtos.TrapSignal(logger, func() {
-		logger.Info("shutting down...")
+	cmtos.TrapSignal(seed.FilteredLogger, func() {
+		seed.FilteredLogger.Info("shutting down...")
 		if err := seed.Stop(); err != nil {
-			logger.Error("error while shutting down", "err", err)
+			seed.FilteredLogger.Error("error while shutting down", "err", err)
 		}
 	})
 
