@@ -149,4 +149,11 @@ func TestDefaultConfigIsUsable(t *testing.T) {
 	if wait != DefaultSeedDisconnectWaitPeriod {
 		t.Errorf("got %s, want %s", wait, DefaultSeedDisconnectWaitPeriod)
 	}
+	period, err := DefaultConfig().CheckPeriod()
+	if err != nil {
+		t.Fatalf("default config: %v", err)
+	}
+	if period != DefaultPeerCheckPeriod {
+		t.Errorf("got %s, want %s", period, DefaultPeerCheckPeriod)
+	}
 }
