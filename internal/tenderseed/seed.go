@@ -227,6 +227,12 @@ func (s *Seed) Wait() {
 
 // Stop saves the address book to disk and stops the switch.
 func (s *Seed) Stop() error {
+	// A signal can arrive between the trap and Switch.Start, in which case
+	// there is nothing to save and nothing to stop.
+	if !s.Switch.IsRunning() {
+		s.stopMetrics()
+		return nil
+	}
 	s.AddrBook.Save()
 	s.stopMetrics()
 	return s.Switch.Stop()
