@@ -211,8 +211,19 @@ popular address is mentioned by many peers, so the addresses re-dialled most wer
 the ones whose reachability was least in doubt.
 
 Both come from the same gap, so one structure closes both: the last verdict on
-each address, when it was reached, and how many failures preceded it. One map,
-one lock, two policies that never mix.
+each node identity, when it was reached, and how many failures preceded it. One
+map, one lock, two policies that never mix.
+
+The key is the node identity, not the full address, and that is deliberate. The
+upstream book is itself keyed that way: `addrLookup` is indexed by ID, `MarkGood`
+takes an ID as its argument, and `MarkAttempt`, `IsGood` and `AddAddress` all
+reach their entry through `addr.ID`. A verdict applies to a book entry, and a
+book entry is an identity. Keying on the full address would hold two verdicts
+for one entry, which is a divergence rather than a refinement. The consequence
+is that an identity reappearing at a new host inherits the verdict of the old
+one, for at most the freshness window or the current backoff; the book behaves
+the same way, since `AddAddress` refuses to change the address of an identity it
+already holds as old.
 
 **On failure**, the next attempt is spaced by 2^n seconds, capped at 4 hours.
 The formula is the upstream one, `pex_reactor.go` line 544, deliberately: both
@@ -223,6 +234,20 @@ also have hardened the punishment of failures. The cap sits below the 24-hour
 upstream ban so that this reactor is never the slower of the two clocks and no
 third timescale appears. There is no permanent give-up: the crawler alone bans,
 and an address it has evicted never comes back through `GetSelection` anyway.
+
+**The sweep samples what is served, not the book.** A seed answers a request
+for addresses with `GetSelectionWithBias`, which draws most of its result from
+the old buckets, that is from the addresses this reactor promoted. Sweeping the
+unbiased `GetSelection` sampled the book uniformly, where promoted addresses are
+a small minority: on a book of a thousand entries holding thirty promoted ones,
+a promoted address came up in roughly one sweep out of five, and it is precisely
+the address served first. Since nothing ever demotes a `MarkGood`, that
+population is the only one the sweep exists for. The new buckets are not left
+uncovered: they are what the arrival path verifies, and the biased selection
+still draws from them. The bias never shortens the selection either: when the
+old buckets cannot supply their share, `numRequiredNewAdd` claims the difference
+from the new ones, so an early book with few promoted addresses yields a full
+selection that happens to contain all of them.
 
 **On success**, re-verification is suppressed for a window derived from the
 period rather than exposed as a key: `min(period / 2, period - 5 minutes)`,
@@ -255,6 +280,19 @@ duplicate rejection. Marking an attempt there would penalise a live address, on 
 counter shared with upstream. Those two shapes are filtered; every other
 rejection, an incompatible network or a failed authentication, remains a verdict
 about the address and is marked.
+
+**What earns a counter.** One outcome per behaviour whose value can be
+interpreted, never one outcome per branch of the code. `skipped_local` groups
+the three exits that dial nothing and learn nothing, our own address, a banned
+one, and a connection already open or under way: none of them is a behaviour
+this fork changed, telling them apart would answer no question anyone has asked,
+and the debug line covers the day one is. `skipped_collision` is separate
+because a dial did happen and taught nothing about the address, and because it
+is the only one of the four this version changed: its value is the number of
+unfair marks avoided on live addresses. By the same rule `skipped_backoff` and
+`skipped_fresh` stay apart, being two distinct policies rather than two
+branches. The stage label follows the same logic: a skip in the queue and a skip
+before a dial bound the saved traffic from opposite sides.
 
 **The map is bounded.** An entry whose address has left the book can never be
 served or queued again and is dropped, but only once it has come out of its wait,

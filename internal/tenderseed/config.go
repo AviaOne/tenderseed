@@ -3,6 +3,8 @@ package tenderseed
 import (
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
 	"time"
 
 	toml "github.com/pelletier/go-toml"
@@ -148,6 +150,47 @@ func LoadConfigFromFile(file string) (*Config, error) {
 	}
 
 	return config, nil
+}
+
+// UnknownKeys returns the top level keys of a config file that this binary does
+// not know, so a caller can say so instead of letting them pass in silence.
+//
+// A misspelled key is the likeliest way an operator loses a setting: decoding
+// ignores it and the default applies, with nothing to see. Refusing the file
+// outright would be worse, since it would stop an older binary from reading a
+// file written for a newer one, which the compatibility contract forbids. So
+// this reports and never refuses, and it does so by comparing the parsed tree
+// against the struct tags rather than by asking the decoder for a strict mode,
+// which only knows how to refuse. A file that cannot be parsed yields no keys
+// and no error here: the decoder in LoadConfigFromFile is what reports that.
+func UnknownKeys(file string) []string {
+	reader, err := os.Open(file)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = reader.Close() }()
+
+	tree, err := toml.LoadReader(reader)
+	if err != nil {
+		return nil
+	}
+
+	known := make(map[string]bool)
+	fields := reflect.TypeOf(Config{})
+	for i := 0; i < fields.NumField(); i++ {
+		if tag := fields.Field(i).Tag.Get("toml"); tag != "" {
+			known[tag] = true
+		}
+	}
+
+	var unknown []string
+	for _, key := range tree.Keys() {
+		if !known[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
 }
 
 // WriteConfigToFile writes the seed config to file

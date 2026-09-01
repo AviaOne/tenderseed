@@ -183,3 +183,31 @@ func TestDefaultConfigIsUsable(t *testing.T) {
 		t.Errorf("got %s, want %s", period, DefaultPeerCheckPeriod)
 	}
 }
+
+func TestUnknownKeysAreReportedNotRefused(t *testing.T) {
+	path := writeConfig(t, `
+chain_id = "test-1"
+peer_check_perod = "1m"
+not_a_key = 3
+`)
+
+	config, err := LoadConfigFromFile(path)
+	if err != nil {
+		t.Fatalf("a file with unknown keys must still load: %v", err)
+	}
+	if config.PeerCheckPeriod != DefaultConfig().PeerCheckPeriod {
+		t.Error("a misspelled key must not change the value it was aimed at")
+	}
+
+	unknown := UnknownKeys(path)
+	if len(unknown) != 2 || unknown[0] != "not_a_key" || unknown[1] != "peer_check_perod" {
+		t.Fatalf("unknown keys = %v, want [not_a_key peer_check_perod]", unknown)
+	}
+
+	if got := UnknownKeys(writeConfig(t, "chain_id = \"test-1\"\n")); len(got) != 0 {
+		t.Errorf("a correct file reports %v, want nothing", got)
+	}
+	if got := UnknownKeys(filepath.Join(t.TempDir(), "absent.toml")); got != nil {
+		t.Errorf("a missing file reports %v, want nothing", got)
+	}
+}

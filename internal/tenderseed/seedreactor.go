@@ -17,6 +17,19 @@ import (
 // in reserve.
 const queuePerWorker = 32
 
+// seedSelectionBiasTowardsNew is the bias the upstream reactor applies when a
+// seed answers a request for addresses: biasToSelectNewPeers in
+// cometbft/p2p/pex/params.go, passed at pex_reactor.go:263. The constant is not
+// exported, so it is repeated here, as queuePerWorker repeats minGetSelection.
+//
+// The name carries the direction on purpose. The bias is towards the new
+// buckets and the value is 30, so a selection is roughly seven tenths old
+// addresses, that is the ones this reactor promoted. Reading it the other way
+// round and writing 70 would produce the exact opposite of what the sweep is
+// for, and no test would catch it. A drift in the upstream value would only
+// shift proportions, never correctness.
+const seedSelectionBiasTowardsNew = 30
+
 // verifyBackoffCap bounds the exponential backoff applied to a failing
 // address. It stays below the 24h ban the upstream crawler applies after
 // maxAttemptsToDial, so that this reactor never becomes the slower of the two
@@ -40,30 +53,65 @@ const verifyStateTTL = 2 * verifyBackoffCap
 // MultiplexTransport.Dial). 5 minutes covers 224s with room to spare.
 const verifySweepMargin = 5 * time.Minute
 
-// Outcomes of a verification decision. Every decision increments exactly one
-// of these, so the sum is the number of decisions taken and the shares are
-// readable. skippedLocal covers the cases where nothing was learned about the
-// address itself: our own address, a banned one, a connection already open or
-// under way, and the duplicate rejections below.
+// The two stages that can reach a decision. The stage is not decoration: a skip
+// at the verify stage is a dial that certainly would have happened, since the
+// address had already taken a queue slot; a skip at the enqueue stage only
+// avoids an offer to the queue, and whether that offer would have become a dial
+// depends on an occupancy no counter can reconstruct. Read together they bound
+// the traffic actually saved, from below and from above.
 const (
-	resultSuccess        = "success"
-	resultFailure        = "failure"
-	resultSkippedBackoff = "skipped_backoff"
-	resultSkippedFresh   = "skipped_fresh"
-	resultSkippedLocal   = "skipped_local"
-	resultDroppedFull    = "dropped_full"
+	stageEnqueue = "enqueue"
+	stageVerify  = "verify"
 )
 
-var verifyResults = []string{
-	resultSuccess,
-	resultFailure,
-	resultSkippedBackoff,
-	resultSkippedFresh,
-	resultSkippedLocal,
-	resultDroppedFull,
+// Outcomes of a verification decision.
+//
+// One issue per behaviour whose value can be interpreted, never one issue per
+// branch of the code. skippedLocal groups the three exits that dial nothing and
+// learn nothing, our own address, a banned one and a connection already open or
+// under way, because none of them is a behaviour this fork changed and telling
+// them apart would answer no question anyone has asked; the debug line in
+// verify covers the day one is. skippedCollision is separate because a dial did
+// happen and taught nothing about the address, and because it is the only one
+// of the four that v2.2.0 changed: its value is the number of unfair marks
+// avoided on live addresses. By the same rule skippedBackoff and skippedFresh
+// stay apart, being two distinct policies rather than two branches.
+const (
+	resultSuccess          = "success"
+	resultAnsweredUnlisted = "answered_unlisted"
+	resultFailure          = "failure"
+	resultSkippedBackoff   = "skipped_backoff"
+	resultSkippedFresh     = "skipped_fresh"
+	resultSkippedLocal     = "skipped_local"
+	resultSkippedCollision = "skipped_collision"
+	resultDroppedFull      = "dropped_full"
+)
+
+// verifyOutcome is one countable decision: what was decided, and where.
+type verifyOutcome struct {
+	result string
+	stage  string
 }
 
-// verifyState is the last verdict this reactor reached on one address.
+// verifyOutcomes lists the pairs that can actually occur, not their cartesian
+// product: nothing publishes a series that cannot exist. Everything that walks
+// the outcomes, the counters, their publication at zero and the summary line,
+// walks this list, so the sum over both dimensions stays the number of
+// decisions taken.
+var verifyOutcomes = []verifyOutcome{
+	{resultSkippedBackoff, stageEnqueue},
+	{resultSkippedFresh, stageEnqueue},
+	{resultDroppedFull, stageEnqueue},
+	{resultSuccess, stageVerify},
+	{resultAnsweredUnlisted, stageVerify},
+	{resultFailure, stageVerify},
+	{resultSkippedBackoff, stageVerify},
+	{resultSkippedFresh, stageVerify},
+	{resultSkippedLocal, stageVerify},
+	{resultSkippedCollision, stageVerify},
+}
+
+// verifyState is the last verdict this reactor reached on one node identity.
 //
 // It exists because verify used to be stateless, which had two costs. A dead
 // address in the served selection was re-dialled at every sweep for as long as
@@ -75,6 +123,10 @@ var verifyResults = []string{
 // attempt exponentially, on the same scale as the upstream crawler. A success
 // suppresses re-verification for less than one period, so that the periodic
 // re-check the seed exists for is never the thing being skipped.
+//
+// The key is the node identity, not the full address, and that is deliberate:
+// the upstream book is keyed that way throughout, so a verdict applies to a
+// book entry and a book entry is an identity. See FORK.md section 3.6.
 type verifyState struct {
 	addr  *p2p.NetAddress
 	last  time.Time
@@ -110,8 +162,8 @@ type SeedReactor struct {
 	mtx   sync.Mutex
 	state map[p2p.ID]*verifyState
 
-	counts  map[string]*atomic.Int64
-	seen    map[string]int64
+	counts  map[verifyOutcome]*atomic.Int64
+	seen    map[verifyOutcome]int64
 	metrics *verifyMetrics
 
 	addrs chan *p2p.NetAddress
@@ -136,7 +188,7 @@ func NewSeedReactor(book pex.AddrBook, config *pex.ReactorConfig, workers int, p
 		freshFor: freshWindow(period),
 		state:    make(map[p2p.ID]*verifyState),
 		counts:   newCounts(),
-		seen:     make(map[string]int64),
+		seen:     make(map[verifyOutcome]int64),
 		metrics:  metrics,
 		addrs:    make(chan *p2p.NetAddress, workers*queuePerWorker),
 		quit:     make(chan struct{}),
@@ -145,10 +197,10 @@ func NewSeedReactor(book pex.AddrBook, config *pex.ReactorConfig, workers int, p
 	return r
 }
 
-func newCounts() map[string]*atomic.Int64 {
-	counts := make(map[string]*atomic.Int64, len(verifyResults))
-	for _, result := range verifyResults {
-		counts[result] = new(atomic.Int64)
+func newCounts() map[verifyOutcome]*atomic.Int64 {
+	counts := make(map[verifyOutcome]*atomic.Int64, len(verifyOutcomes))
+	for _, outcome := range verifyOutcomes {
+		counts[outcome] = new(atomic.Int64)
 	}
 	return counts
 }
@@ -228,14 +280,16 @@ func (r *SeedReactor) Stop() error {
 	return r.Reactor.Stop()
 }
 
-// count records one decision. Every path that ends a verification calls it
-// exactly once, including the ones that dial nothing.
-func (r *SeedReactor) count(result string) {
-	if counter, ok := r.counts[result]; ok {
+// count records one decision. Every path that reaches a verdict calls it
+// exactly once. One case is outside that rule and is meant to be: on shutdown,
+// enqueue abandons the rest of a batch without counting it, because no decision
+// was taken on those addresses.
+func (r *SeedReactor) count(result, stage string) {
+	if counter, ok := r.counts[verifyOutcome{result, stage}]; ok {
 		counter.Add(1)
 	}
 	if r.metrics != nil {
-		r.metrics.observe(result)
+		r.metrics.observe(result, stage)
 	}
 }
 
@@ -290,9 +344,9 @@ func (r *SeedReactor) recordFailure(addr *p2p.NetAddress) {
 }
 
 // purge bounds the map. An entry whose address has left the book can never be
-// served or queued again, so it is dropped, but only once it has come out of
-// its wait: dropping it earlier would hand back a free dial to an address that
-// was told to wait. Anything past the TTL goes regardless.
+// served or queued again and is dropped, but only once it has come out of its
+// wait: dropping it earlier would hand back a free dial to an address that was
+// told to wait. Anything past the TTL goes regardless.
 func (r *SeedReactor) purge() int {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
@@ -387,7 +441,7 @@ func (r *SeedReactor) enqueue(addrs []*p2p.NetAddress) {
 			continue
 		}
 		if ok, reason := r.eligible(addr); !ok {
-			r.count(reason)
+			r.count(reason, stageEnqueue)
 			continue
 		}
 		select {
@@ -395,7 +449,7 @@ func (r *SeedReactor) enqueue(addrs []*p2p.NetAddress) {
 		case <-r.quit:
 			return
 		default:
-			r.count(resultDroppedFull)
+			r.count(resultDroppedFull, stageEnqueue)
 			r.logger.Debug("verification queue full, dropping address", "addr", addr)
 		}
 	}
@@ -416,6 +470,23 @@ func (r *SeedReactor) verifyWorker() {
 
 // sweepRoutine re-queues the selection the seed would actually serve, so that
 // an address marked good once cannot stay good forever.
+//
+// The bias matters and is not decoration. A seed answers a request for
+// addresses with GetSelectionWithBias (pex_reactor.go:263), which draws most of
+// its result from the old buckets, that is from the addresses this reactor
+// promoted. Sweeping the unbiased GetSelection instead sampled the book
+// uniformly, where promoted addresses are a small minority: on a book of a
+// thousand entries holding thirty promoted ones, a promoted address came up in
+// roughly one sweep out of five, and it is precisely the address served first.
+// Nothing ever demotes a MarkGood, so that population is the only one the sweep
+// exists for. The new buckets are not left uncovered: they are what the arrival
+// path verifies, and the biased selection still draws from them.
+//
+// The bias never shortens the selection. When the old buckets cannot supply
+// their share, GetSelectionWithBias claims the difference from the new ones
+// (addrbook.go, numRequiredNewAdd takes the larger of the bias and
+// numAddresses-nOld), so an early book with few promoted addresses yields a
+// full selection that happens to contain all of them.
 func (r *SeedReactor) sweepRoutine() {
 	defer r.wg.Done()
 	ticker := time.NewTicker(r.period)
@@ -424,7 +495,7 @@ func (r *SeedReactor) sweepRoutine() {
 		select {
 		case <-ticker.C:
 			dropped := r.purge()
-			selection := r.book.GetSelection()
+			selection := r.book.GetSelectionWithBias(seedSelectionBiasTowardsNew)
 			r.logSweep(len(selection), dropped)
 			r.enqueue(selection)
 		case <-r.quit:
@@ -438,11 +509,20 @@ func (r *SeedReactor) sweepRoutine() {
 // counters; it is what an operator without Prometheus can see. It carries the
 // same outcomes as those counters so the two cannot tell different stories.
 func (r *SeedReactor) logSweep(selection, dropped int) {
-	fields := []interface{}{"selection", selection, "state_dropped", dropped, "state_size", r.stateSize()}
-	for _, result := range verifyResults {
-		total := r.counts[result].Load()
-		fields = append(fields, result, total-r.seen[result])
-		r.seen[result] = total
+	// queue_len is read before the selection is offered, so it says how much
+	// room the sweep found rather than how much it used. A queue already full
+	// at the tick means the sweep is the flow being dropped, not the arriving
+	// one, which is the opposite of what the drop was meant for.
+	fields := []interface{}{
+		"selection", selection,
+		"queue_len", len(r.addrs),
+		"state_dropped", dropped,
+		"state_size", r.stateSize(),
+	}
+	for _, outcome := range verifyOutcomes {
+		total := r.counts[outcome].Load()
+		fields = append(fields, outcome.stage+"_"+outcome.result, total-r.seen[outcome])
+		r.seen[outcome] = total
 	}
 	r.logger.Info("verification sweep", fields...)
 }
@@ -455,46 +535,62 @@ func (r *SeedReactor) stateSize() int {
 
 // verify dials an address, marks the book accordingly, and hangs up.
 func (r *SeedReactor) verify(addr *p2p.NetAddress) {
+	if addr == nil {
+		r.count(resultSkippedLocal, stageVerify)
+		return
+	}
 	sw := r.Reactor.Switch
-	if sw == nil || addr == nil {
+	if sw == nil {
+		r.count(resultSkippedLocal, stageVerify)
 		return
 	}
 	if addr.ID == sw.NodeInfo().ID() {
-		r.count(resultSkippedLocal)
+		r.count(resultSkippedLocal, stageVerify)
 		return
 	}
 	if r.book.IsBanned(addr) {
-		r.count(resultSkippedLocal)
+		r.count(resultSkippedLocal, stageVerify)
 		return
 	}
 	if ok, reason := r.eligible(addr); !ok {
-		r.count(reason)
+		r.count(reason, stageVerify)
 		return
 	}
 	if sw.IsDialingOrExistingAddress(addr) {
-		r.count(resultSkippedLocal)
+		r.count(resultSkippedLocal, stageVerify)
 		return
 	}
 	if err := sw.DialPeerWithAddress(addr); err != nil {
-		if isLocalDialCollision(err) {
-			r.count(resultSkippedLocal)
+		if outcome := dialOutcome(err); outcome != "" {
+			r.count(outcome, stageVerify)
 			return
 		}
 		r.recordFailure(addr)
 		r.book.MarkAttempt(addr)
-		r.count(resultFailure)
+		r.count(resultFailure, stageVerify)
 		r.logger.Debug("address failed verification", "addr", addr, "err", err)
 		return
 	}
 
 	// MarkGood does nothing for an address the book does not know, so it has
 	// to be added first. cosmoseed does these two in the opposite order.
+	//
+	// A refusal here, strict routability being the usual one, means the book
+	// will not hold the address and MarkGood has nothing to promote. The dial
+	// still succeeded, so the state is reset either way, but the outcome is
+	// counted apart: success is meant to say promoted, not merely answered.
+	promoted := true
 	if err := r.book.AddAddress(addr, addr); err != nil {
 		r.logger.Debug("could not add verified address", "addr", addr, "err", err)
+		promoted = false
 	}
 	r.book.MarkGood(addr.ID)
 	r.recordSuccess(addr)
-	r.count(resultSuccess)
+	if promoted {
+		r.count(resultSuccess, stageVerify)
+	} else {
+		r.count(resultAnsweredUnlisted, stageVerify)
+	}
 
 	// Hang up straight away. NibiruChain leaves these connections open, which
 	// wastes outbound slots and blurs the roles: the upstream crawler
@@ -504,22 +600,29 @@ func (r *SeedReactor) verify(addr *p2p.NetAddress) {
 	}
 }
 
-// isLocalDialCollision reports whether a failed dial says something about this
-// node rather than about the address.
+// dialOutcome reports which outcome a failed dial belongs to when it says
+// something about this node rather than about the address, and the empty string
+// when the failure is a verdict on the address itself.
 //
-// Two shapes reach here. ErrCurrentlyDialingOrExistingAddress comes from
-// DialPeerWithAddress itself (switch.go:610). ErrRejected with IsDuplicate
-// comes from either filterConn on the connection (transport.go:378) or
-// filterPeer on the ID (switch.go:846), and its usual cause is a peer that
-// connected to us while we were dialling it. Counting either as a failed
-// attempt would mark a live address against the book, and the counter it feeds
-// is shared with the upstream crawler. Every other rejection stays a verdict:
-// an incompatible network or a failed authentication is about the address.
-func isLocalDialCollision(err error) bool {
+// Two shapes qualify, and they are counted apart because only one of them cost
+// a dial. ErrCurrentlyDialingOrExistingAddress comes from DialPeerWithAddress
+// before it connects anything (switch.go:610), so nothing was spent and nothing
+// learned. ErrRejected with IsDuplicate comes after the connection is up,
+// from either filterConn on the connection (transport.go:378) or filterPeer on
+// the ID (switch.go:846), and its usual cause is a peer that connected to us
+// while we were dialling it; a dial did happen and taught nothing about the
+// address. Counting either as a failed attempt would mark a live address
+// against a counter shared with the upstream crawler. Every other rejection
+// stays a verdict: an incompatible network or a failed authentication is about
+// the address.
+func dialOutcome(err error) string {
 	var dialing p2p.ErrCurrentlyDialingOrExistingAddress
 	if errors.As(err, &dialing) {
-		return true
+		return resultSkippedLocal
 	}
 	var rejected p2p.ErrRejected
-	return errors.As(err, &rejected) && rejected.IsDuplicate()
+	if errors.As(err, &rejected) && rejected.IsDuplicate() {
+		return resultSkippedCollision
+	}
+	return ""
 }

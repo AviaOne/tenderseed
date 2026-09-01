@@ -500,7 +500,7 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 | `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour |
 | `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 29 minutes sequentially and about 3m40 with 8 workers. Lower it on a constrained machine |
 | `allow_duplicate_ip` | `true` | allow several peers behind a single IP address. Setting it to `false` also changes the meaning of "already connected", so it interacts with verification |
-| `metrics_listen_addr` | empty | address to serve Prometheus metrics on, for example `127.0.0.1:26660`. Empty disables the endpoint |
+| `metrics_listen_addr` | empty | address to serve Prometheus metrics on, for example `127.0.0.1:26660`. Empty disables the endpoint. A port already taken is logged and the seed keeps serving peers, unlike an unusable `metrics_namespace` which refuses to start: the first can resolve itself, the second never will |
 | `metrics_namespace` | `cometbft` | prefix of every exported series. Matches the upstream default, so dashboards written for a full node work unchanged |
 | `moniker` | empty | name announced to peers. Empty means `<chain_id>-seed` |
 
@@ -550,20 +550,30 @@ curl -s 127.0.0.1:26660/metrics | grep '^cometbft_p2p'
 ```
 
 Verification reports its own work, which nothing upstream counts. One series,
-one label, six outcomes, and they always sum to the number of decisions taken:
+two labels, ten reachable pairs, and they always sum to the number of decisions
+taken:
 
 ```bash
 curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_verify_dials_total'
 ```
 
-| outcome | meaning |
-|---|---|
-| `success` | the address answered and was promoted |
-| `failure` | the dial failed and the attempt was marked against the book |
-| `skipped_backoff` | a previously failing address is still inside its backoff |
-| `skipped_fresh` | the address was verified recently enough to be trusted |
-| `skipped_local` | nothing was learned: our own address, a banned one, a connection already open or under way |
-| `dropped_full` | the queue was full, the address was dropped |
+| outcome | stages | meaning |
+|---|---|---|
+| `success` | verify | the address answered and was promoted |
+| `answered_unlisted` | verify | the address answered but the book refused to hold it, so nothing was promoted. Strict routability is the usual cause |
+| `failure` | verify | the dial failed and the attempt was marked against the book |
+| `skipped_backoff` | enqueue, verify | a previously failing address is still inside its backoff |
+| `skipped_fresh` | enqueue, verify | the address was verified recently enough to be trusted |
+| `skipped_local` | verify | nothing was dialled and nothing learned: our own address, a banned one, a connection already open or under way |
+| `skipped_collision` | verify | a dial happened and taught nothing: a peer connected to us while we were dialling it. This is the count of unfair marks avoided on live addresses |
+| `dropped_full` | enqueue | the queue was full, the address was dropped |
+
+The `stage` label says where the decision was taken, and it is what bounds the
+traffic actually saved. A skip at `verify` is a dial that would certainly have
+happened, since the address had already taken a queue slot: those are the lower
+bound. A skip at `enqueue` only avoided an offer to the queue, and whether that
+offer would have become a dial depends on an occupancy no counter can
+reconstruct: the total of both stages is the upper bound.
 
 `skipped_backoff` rising while `failure` falls is the backoff working.
 `dropped_full` rising is not: it means the queue is saturated and the sweep is

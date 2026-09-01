@@ -47,6 +47,15 @@ func main() {
 			fail(err)
 		}
 
+		// Reported, never refused: a key this binary does not know may belong
+		// to a newer version, and refusing it would break the compatibility
+		// contract. A misspelled one would otherwise be silently ignored. No
+		// logger exists yet at this point, so this goes to standard error like
+		// fail does.
+		for _, key := range tenderseed.UnknownKeys(configFilePath) {
+			fmt.Fprintf(os.Stderr, "tenderseed: unknown configuration key %q, ignored\n", key)
+		}
+
 		// Get chain-id, seeds from ENV. An empty variable counts as unset.
 		envChainID := os.Getenv("TENDERSEED_CHAIN_ID")
 		envSeeds := os.Getenv("TENDERSEED_SEEDS")

@@ -42,7 +42,7 @@ type Seed struct {
 
 // Version is the software version announced to peers during the handshake.
 // Override it at build time with -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=<value>".
-var Version = "2.2.0"
+var Version = "2.2.1"
 
 // NewSeed builds every component of a seed node and wires them together.
 // It listens on the configured address but does not start the switch.
@@ -187,10 +187,16 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 	}
 
 	// The counters share the fate of the endpoint: no listener, no series.
+	//
+	// The transport has been listening since Listen above, and this is the last
+	// path in NewSeed that can fail, so it releases the socket like Start and
+	// Stop do. The process exits anyway; leaving one path out would only invite
+	// the question of why the others bother.
 	var seedMetrics *verifyMetrics
 	if s.Config.MetricsListenAddress != "" {
 		seedMetrics, err = newVerifyMetrics(s.Config.MetricsNamespace)
 		if err != nil {
+			s.closeTransport()
 			return nil, err
 		}
 	}

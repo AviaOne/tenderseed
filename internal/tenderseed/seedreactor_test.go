@@ -67,7 +67,7 @@ func newTestReactor(t *testing.T, workers int) *SeedReactor {
 		freshFor: freshWindow(DefaultPeerCheckPeriod),
 		state:    make(map[p2p.ID]*verifyState),
 		counts:   newCounts(),
-		seen:     make(map[string]int64),
+		seen:     make(map[verifyOutcome]int64),
 		addrs:    make(chan *p2p.NetAddress, workers*queuePerWorker),
 		quit:     make(chan struct{}),
 	}
@@ -283,30 +283,70 @@ func TestEveryDecisionIsCounted(t *testing.T) {
 
 	r.recordSuccess(addr)
 	r.enqueue([]*p2p.NetAddress{addr})
-	if got := r.counts[resultSkippedFresh].Load(); got != 1 {
-		t.Fatalf("skipped_fresh = %d, want 1", got)
+	if got := r.counts[verifyOutcome{resultSkippedFresh, stageEnqueue}].Load(); got != 1 {
+		t.Fatalf("skipped_fresh at the enqueue stage = %d, want 1", got)
+	}
+	if got := r.counts[verifyOutcome{resultSkippedFresh, stageVerify}].Load(); got != 0 {
+		t.Fatalf("nothing reached the verify stage, got %d", got)
 	}
 	if len(r.addrs) != 0 {
 		t.Fatal("a suppressed address must not reach the queue")
 	}
 }
 
-func TestLocalDialCollisionsAreNotVerdicts(t *testing.T) {
-	if !isLocalDialCollision(p2p.ErrCurrentlyDialingOrExistingAddress{Addr: "x"}) {
-		t.Error("a dial already under way says nothing about the address")
+func TestOutcomeListIsCoherent(t *testing.T) {
+	r := newTestReactor(t, 1)
+	if len(r.counts) != len(verifyOutcomes) {
+		t.Fatalf("%d counters for %d outcomes", len(r.counts), len(verifyOutcomes))
 	}
-	if !isLocalDialCollision(fmt.Errorf("wrapped: %w", p2p.ErrCurrentlyDialingOrExistingAddress{Addr: "x"})) {
-		t.Error("the test must survive wrapping, the switch wraps its dial errors")
+	seen := map[verifyOutcome]bool{}
+	for _, outcome := range verifyOutcomes {
+		if seen[outcome] {
+			t.Errorf("outcome %v listed twice", outcome)
+		}
+		seen[outcome] = true
+		if outcome.stage != stageEnqueue && outcome.stage != stageVerify {
+			t.Errorf("outcome %v has no valid stage", outcome)
+		}
+		if _, ok := r.counts[outcome]; !ok {
+			t.Errorf("outcome %v has no counter", outcome)
+		}
+	}
+	// The two shapes that bound the saved traffic must both be countable at
+	// the stage where they can occur.
+	for _, outcome := range []verifyOutcome{
+		{resultSkippedBackoff, stageEnqueue},
+		{resultSkippedBackoff, stageVerify},
+		{resultSkippedCollision, stageVerify},
+		{resultAnsweredUnlisted, stageVerify},
+	} {
+		if !seen[outcome] {
+			t.Errorf("%v is missing from the outcome list", outcome)
+		}
+	}
+	// A collision can only be observed after a dial, so it has no meaning at
+	// the enqueue stage.
+	if seen[verifyOutcome{resultSkippedCollision, stageEnqueue}] {
+		t.Error("a collision cannot be decided before a dial")
+	}
+}
+
+func TestDialOutcomeSeparatesTheTwoLocalShapes(t *testing.T) {
+	if got := dialOutcome(p2p.ErrCurrentlyDialingOrExistingAddress{Addr: "x"}); got != resultSkippedLocal {
+		t.Errorf("a dial already under way spent nothing, got %q", got)
+	}
+	if got := dialOutcome(fmt.Errorf("wrapped: %w", p2p.ErrCurrentlyDialingOrExistingAddress{Addr: "x"})); got != resultSkippedLocal {
+		t.Errorf("the test must survive wrapping, got %q", got)
 	}
 	// The duplicate case cannot be built here: every field of p2p.ErrRejected
 	// is unexported and the package offers no constructor, so only p2p itself
-	// can produce one. What is checked instead is the half that matters for
-	// correctness in the other direction: a rejection that is not a duplicate
-	// stays a verdict on the address and must still be marked.
-	if isLocalDialCollision(p2p.ErrRejected{}) {
-		t.Error("a rejection that is not a duplicate is a verdict")
+	// can produce one. What is checked is the half that matters in the other
+	// direction: a rejection that is not a duplicate stays a verdict on the
+	// address and must still be marked.
+	if got := dialOutcome(p2p.ErrRejected{}); got != "" {
+		t.Errorf("a rejection that is not a duplicate is a verdict, got %q", got)
 	}
-	if isLocalDialCollision(errors.New("connection refused")) {
-		t.Error("a network failure is a verdict")
+	if got := dialOutcome(errors.New("connection refused")); got != "" {
+		t.Errorf("a network failure is a verdict, got %q", got)
 	}
 }

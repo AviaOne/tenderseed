@@ -36,8 +36,8 @@ func newVerifyMetrics(namespace string) (*verifyMetrics, error) {
 		Namespace: namespace,
 		Subsystem: "seed",
 		Name:      "verify_dials_total",
-		Help:      "Verification decisions taken by the seed reactor, by outcome.",
-	}, []string{"result"})
+		Help:      "Verification decisions taken by the seed reactor, by outcome and by the stage that took them.",
+	}, []string{"result", "stage"})
 
 	if err := prometheus.DefaultRegisterer.Register(dials); err != nil {
 		var registered prometheus.AlreadyRegisteredError
@@ -51,16 +51,18 @@ func newVerifyMetrics(namespace string) (*verifyMetrics, error) {
 		dials = existing
 	}
 
-	// Publish every outcome at zero, so a share can be read from the first
-	// scrape rather than from the first occurrence.
-	for _, result := range verifyResults {
-		dials.WithLabelValues(result)
+	// Publish every reachable pair at zero, so a share can be read from the
+	// first scrape rather than from the first occurrence. Pairs that cannot
+	// occur are not published: an empty series would be a question nobody can
+	// answer.
+	for _, outcome := range verifyOutcomes {
+		dials.WithLabelValues(outcome.result, outcome.stage)
 	}
 	return &verifyMetrics{dials: dials}, nil
 }
 
-func (m *verifyMetrics) observe(result string) {
-	m.dials.WithLabelValues(result).Inc()
+func (m *verifyMetrics) observe(result, stage string) {
+	m.dials.WithLabelValues(result, stage).Inc()
 }
 
 // newMetricsServer builds the HTTP server that exposes Prometheus metrics.
