@@ -190,13 +190,86 @@ picks up again.
 
 ---
 
+### 3.6 Verification remembers its own verdicts
+
+Verification used to be stateless, and that cost twice.
+
+A dead address in the served selection was re-dialled at every sweep, with no
+spacing at all, for as long as the upstream crawler took to evict it. That
+eviction is real and bounded: `dialPeer` gives up after `maxAttemptsToDial`, 16
+attempts spread over roughly 35 hours, then bans the address for 24 hours, which
+is what section 5.3 measures as the book falling from 1263 entries to 20 between
+24 and 55 hours. Bounded is not free: on a full book, a selection of 250
+addresses of which most are unreachable meant on the order of a thousand futile
+connections an hour, each paying a connect timeout, for the whole of that window,
+and again after every ban expiry that put the address back in circulation. The
+sweep never removed anything itself; it only added traffic.
+
+An address just verified could also be dialled again straight away as soon as
+another peer mentioned it, for a second full handshake that taught nothing. A
+popular address is mentioned by many peers, so the addresses re-dialled most were
+the ones whose reachability was least in doubt.
+
+Both come from the same gap, so one structure closes both: the last verdict on
+each address, when it was reached, and how many failures preceded it. One map,
+one lock, two policies that never mix.
+
+**On failure**, the next attempt is spaced by 2^n seconds, capped at 4 hours.
+The formula is the upstream one, `pex_reactor.go` line 544, deliberately: both
+accountings then live on the same scale and remain comparable. It is not
+expressed in multiples of `peer_check_period`, which would have coupled two
+unrelated effects, since shortening the period to refresh the book faster would
+also have hardened the punishment of failures. The cap sits below the 24-hour
+upstream ban so that this reactor is never the slower of the two clocks and no
+third timescale appears. There is no permanent give-up: the crawler alone bans,
+and an address it has evicted never comes back through `GetSelection` anyway.
+
+**On success**, re-verification is suppressed for a window derived from the
+period rather than exposed as a key: `min(period / 2, period - 5 minutes)`,
+disabled outright when that is not positive. The window must stay strictly below
+the period, and by more than the worst case time an address spends in the queue,
+which is 32 dials deep whatever the worker count and at most 7 seconds each. Were
+it equal to the period, a sweep would re-queue an address exactly as its verdict
+expired and the queue traversal alone would decide whether it was re-verified or
+skipped: an arbitrary, unreproducible share of the re-verifications would vanish
+silently. Below the margin the window collapses to zero and everything is
+re-verified, because re-judging what is served is the point of this fork and the
+saving is only a by-product.
+
+**Interaction with the address book counter.** `MarkAttempt` increments the
+`Attempts` field of a book entry, and both the upstream crawler, through
+`markAddrInBookBasedOnErr`, and this reactor feed the same field. That counter
+only reaches `isBad()`, read by `expireNew` when a new bucket is full, and it
+stops mattering past three failures on an address that never succeeded; a
+promoted address is out of scope entirely, since `MarkGood` zeroes the counter
+and moves the entry to an old bucket. So the sweep never made an address
+evictable meaningfully sooner. What it did was make the counter unreadable, and
+that is now bounded by the backoff. The reverse accounting stays separate: the
+`attemptsToDial` map inside the upstream reactor is unexported, invisible from
+here, and this reactor's dials do not feed it.
+
+**A collision is not a verdict.** A dial can fail for a reason that says nothing
+about the address: a dial already under way, or a peer that connected to us while
+we were dialling it, which both the transport and the switch report as a
+duplicate rejection. Marking an attempt there would penalise a live address, on a
+counter shared with upstream. Those two shapes are filtered; every other
+rejection, an incompatible network or a failed authentication, remains a verdict
+about the address and is marked.
+
+**The map is bounded.** An entry whose address has left the book can never be
+served or queued again and is dropped, but only once it has come out of its wait,
+so that dropping it does not hand back a free dial to an address that was told to
+wait. Anything older than twice the cap goes regardless.
+
+---
+
 ## 4. What the defaults are anchored to
 
 | key | default | anchor |
 |---|---|---|
 | `seed_disconnect_wait_period` | `5m` | judgement, checked at runtime, see 2.3 |
-| `peer_check_workers` | 8 | a selection returns at most 250 addresses and a dial costs at most 4 seconds, so a sequential sweep takes about 17 minutes and an 8-worker sweep about 2 |
-| `peer_check_period` | `10m` | five times the minimum interval between crawls, and five times the duration of one sweep. `0` disables |
+| `peer_check_workers` | 8 | a selection returns at most 250 addresses and a dial costs at most 7 seconds, 1s to connect then two consecutive 3s handshake deadlines, so a sequential sweep takes about 29 minutes and an 8-worker sweep about 3m40 |
+| `peer_check_period` | `10m` | five times the minimum interval between crawls, and about 2.7 times the duration of one sweep. It also sets the window during which a successful verdict is trusted, see 3.6. `0` disables |
 | `allow_duplicate_ip` | `true` | the value upstream hardcoded |
 | `metrics_listen_addr` | empty | disabled by default, so nothing changes for an existing user |
 | `metrics_namespace` | `cometbft` | the upstream default, so validator dashboards apply unchanged |

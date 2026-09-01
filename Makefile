@@ -3,6 +3,9 @@
 # which keeps the value compiled into internal/tenderseed.Version. CI and the
 # Dockerfile pass it explicitly, which takes precedence over this default.
 VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null | sed "s/^v//")
+# GNU make does not read ** as a recursive glob, it reads it as *. Listing the
+# sources with find keeps a rebuild triggered by a file at any depth.
+SOURCES := $(shell find internal -type f -name '*.go')
 LDFLAGS :=
 ifneq ($(VERSION),)
 LDFLAGS := -X github.com/AviaOne/tenderseed/internal/tenderseed.Version=$(VERSION)
@@ -13,13 +16,13 @@ all: build
 # build binaries for current platform
 build: build/tenderseed
 
-build/tenderseed: cmd/tenderseed/main.go $(wildcard internal/**/*.go) go.mod
+build/tenderseed: cmd/tenderseed/main.go $(SOURCES) go.mod
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o ./build/tenderseed ./cmd/tenderseed
 
 # build linux binaries
 build-linux: build/tenderseed.elf
 
-build/tenderseed.elf: cmd/tenderseed/main.go $(wildcard internal/**/*.go) go.mod
+build/tenderseed.elf: cmd/tenderseed/main.go $(SOURCES) go.mod
 	CGO_ENABLED=0 GOOS=linux go build -ldflags "$(LDFLAGS)" -o ./build/tenderseed.elf ./cmd/tenderseed
 
 test:

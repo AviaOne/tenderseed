@@ -141,6 +141,32 @@ func TestDisconnectWaitPeriod(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNegativeLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mutfn func(*Config)
+	}{
+		{"inbound", func(c *Config) { c.MaxNumInboundPeers = -1 }},
+		{"outbound", func(c *Config) { c.MaxNumOutboundPeers = -1 }},
+		{"payload negative", func(c *Config) { c.MaxPacketMsgPayloadSize = -1 }},
+		{"payload zero", func(c *Config) { c.MaxPacketMsgPayloadSize = 0 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := DefaultConfig()
+			tc.mutfn(config)
+			if err := config.Validate(); err == nil {
+				t.Fatal("expected an error, got none")
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsTheDefaults(t *testing.T) {
+	if err := DefaultConfig().Validate(); err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+}
+
 func TestDefaultConfigIsUsable(t *testing.T) {
 	wait, err := DefaultConfig().DisconnectWaitPeriod()
 	if err != nil {

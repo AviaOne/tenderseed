@@ -42,7 +42,7 @@ type Seed struct {
 
 // Version is the software version announced to peers during the handshake.
 // Override it at build time with -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=<value>".
-var Version = "2.1.1"
+var Version = "2.2.0"
 
 // NewSeed builds every component of a seed node and wires them together.
 // It listens on the configured address but does not start the switch.
@@ -55,6 +55,10 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 
 	if s.Config.ChainID == "" {
 		return nil, errors.New("chain_id is not set: set it in config.toml, pass -chain-id, or set TENDERSEED_CHAIN_ID")
+	}
+
+	if err := s.Config.Validate(); err != nil {
+		return nil, err
 	}
 
 	chainID := s.Config.ChainID
@@ -182,13 +186,22 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		s.AddrBook.AddOurAddress(addr)
 	}
 
+	// The counters share the fate of the endpoint: no listener, no series.
+	var seedMetrics *verifyMetrics
+	if s.Config.MetricsListenAddress != "" {
+		seedMetrics, err = newVerifyMetrics(s.Config.MetricsNamespace)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	s.Reactor = NewSeedReactor(s.AddrBook, &pex.ReactorConfig{
 		SeedMode: true,
 		Seeds:    cmtstrings.SplitAndTrim(s.Config.Seeds, ",", " "),
 		// Upstream leaves this at zero for a third-party binary, which
 		// disconnects every crawled peer on the first crawl round.
 		SeedDisconnectWaitPeriod: disconnectWait,
-	}, checkWorkers, checkPeriod, s.FilteredLogger.With("module", "pex"))
+	}, checkWorkers, checkPeriod, seedMetrics, s.FilteredLogger.With("module", "pex"))
 
 	switchOptions := []p2p.SwitchOption{}
 	if s.Config.MetricsListenAddress != "" {
@@ -214,7 +227,7 @@ func (s *Seed) Start() error {
 		s.metrics = newMetricsServer(addr)
 		go func() {
 			s.FilteredLogger.Info("serving metrics", "addr", addr)
-			if err := s.metrics.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := s.metrics.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				s.FilteredLogger.Error("metrics server stopped", "err", err)
 			}
 		}()
@@ -222,7 +235,10 @@ func (s *Seed) Start() error {
 	if err := s.Switch.Start(); err != nil {
 		// The metrics goroutine is already running; the switch is not.
 		// Stop is not usable here, it also touches the address book.
+		// The transport is listening since NewSeed, so it is released here
+		// like it is on both paths of Stop.
 		s.stopMetrics()
+		s.closeTransport()
 		return err
 	}
 	return nil

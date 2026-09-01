@@ -5,6 +5,7 @@ require (
 	github.com/google/subcommands v1.0.1
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pelletier/go-toml v1.9.5
+	github.com/prometheus/client_golang v1.24.1
 )
 
 require (
@@ -46,7 +47,6 @@ require (
 	github.com/oasisprotocol/curve25519-voi v0.0.0-20230904125328-1f23a7beb09a // indirect
 	github.com/petermattis/goid v0.0.0-20250813065127-a731cc31b4fe // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect

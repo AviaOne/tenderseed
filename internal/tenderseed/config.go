@@ -23,8 +23,10 @@ const DefaultMetricsNamespace = "cometbft"
 
 // DefaultPeerCheckPeriod is how often the seed re-verifies the addresses it
 // would serve. GetSelection returns at most maxGetSelection (250) addresses
-// and a dial costs at most 4s (1s connect, 3s handshake), so a sweep with the
-// default worker count finishes well inside this period.
+// and a dial costs at most 7s: 1s to connect (transport.go dialTimeout), then
+// two consecutive 3s handshake deadlines, one for the secret connection and
+// one for the node info exchange. A sweep of a full selection therefore takes
+// about 3m40 with the default worker count, comfortably inside this period.
 const DefaultPeerCheckPeriod = 10 * time.Minute
 
 // DefaultPeerCheckWorkers is how many verification dials run in parallel.
@@ -96,6 +98,22 @@ func (config Config) CheckWorkers() (int, error) {
 	return config.PeerCheckWorkers, nil
 }
 
+// Validate rejects values that CometBFT accepts without complaint and then
+// acts on. A negative peer limit or a payload size of zero is never intended,
+// and the failure it produces is far from the value that caused it.
+func (config Config) Validate() error {
+	if config.MaxNumInboundPeers < 0 {
+		return fmt.Errorf("max_num_inbound_peers: must not be negative, got %d", config.MaxNumInboundPeers)
+	}
+	if config.MaxNumOutboundPeers < 0 {
+		return fmt.Errorf("max_num_outbound_peers: must not be negative, got %d", config.MaxNumOutboundPeers)
+	}
+	if config.MaxPacketMsgPayloadSize <= 0 {
+		return fmt.Errorf("max_packet_msg_payload_size: must be positive, got %d", config.MaxPacketMsgPayloadSize)
+	}
+	return nil
+}
+
 // LoadOrGenConfig loads a seed config from file if the file exists
 // If the file does not exist, make a default config, write it to the file
 // Return either the loaded config or a default config
@@ -122,7 +140,7 @@ func LoadConfigFromFile(file string) (*Config, error) {
 	if err != nil {
 		return config, err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	decoder := toml.NewDecoder(reader)
 	if err := decoder.Decode(config); err != nil {

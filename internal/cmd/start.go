@@ -49,17 +49,21 @@ func (args *StartArgs) Execute(_ context.Context, flagSet *flag.FlagSet, _ ...in
 		return subcommands.ExitFailure
 	}
 
+	if err := seed.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "tenderseed:", err)
+		return subcommands.ExitFailure
+	}
+
+	// Trapped after Start, not before. A signal arriving while Switch.Start
+	// runs would find IsRunning false and close the transport under a switch
+	// that is still starting. Before this line there is nothing to save and
+	// nothing to stop, so the default disposition is the correct one.
 	cmtos.TrapSignal(seed.FilteredLogger, func() {
 		seed.FilteredLogger.Info("shutting down...")
 		if err := seed.Stop(); err != nil {
 			seed.FilteredLogger.Error("error while shutting down", "err", err)
 		}
 	})
-
-	if err := seed.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "tenderseed:", err)
-		return subcommands.ExitFailure
-	}
 
 	seed.Wait()
 	return subcommands.ExitSuccess

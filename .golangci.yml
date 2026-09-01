@@ -1,0 +1,17 @@
+# Pinned so the CI cannot turn red on untouched code when the tool releases a
+# new major version. Keep this file and the version in .github/workflows/go.yml
+# in step.
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # The embedded upstream reactor is named on purpose. Start is overridden
+      # rather than OnStart precisely because pex.NewReactor pins the service
+      # implementation to the embedded type, and the code says so in a comment
+      # right above. Dropping the selector would hide the distinction that the
+      # whole type is built around.
+      - path: internal/tenderseed/seedreactor\.go
+        linters:
+          - staticcheck
+        text: QF1008

@@ -65,7 +65,9 @@ evidence behind each one.
    Upstream has no tag at all and has not moved since February 2023.
 3. **Served peers are qualified.** Addresses are dialled, then `AddAddress`
    followed by `MarkGood` on success, `MarkAttempt` on failure. Verification
-   dials run in parallel through a worker pool.
+   dials run in parallel through a worker pool, and remember their verdicts:
+   a failing address is re-tried on the upstream exponential schedule instead
+   of at every sweep, and one just verified is not dialled again immediately.
 4. **Crawl connection lifetime.** `seed_disconnect_wait_period` is exposed and
    documented, default 5 minutes.
 5. **p2p configuration surface.** Parameters are actually wired through to the
@@ -73,15 +75,17 @@ evidence behind each one.
    hardcoded.
 6. **Startup.** A seed with a populated address book starts without any seed
    configured. Upstream panics.
-7. **Observability.** Prometheus metrics on a dedicated address, off by default.
-   Configurable moniker.
+7. **Observability.** Prometheus metrics on a dedicated address, off by default,
+   including counters for the verification itself, which nothing upstream
+   reports. Configurable moniker.
 8. **Code structure.** An explicit seed instance type replaces a 163-line
    monolith, so the construction order (channels, transport, reactors,
    `SetNodeInfo`) is explicit and testable.
 9. **Tests.** Unit tests, including one that loads a real partial `config.toml`.
    Upstream has none, although its Makefile declares a `test` target.
-10. **Continuous integration.** Build, `vet` and tests run on every push.
-    Upstream only pushed a container image, with no verification of any kind.
+10. **Continuous integration.** Build, `vet`, tests, `gofmt` and a pinned
+    linter run on every push. Upstream only pushed a container image, with no
+    verification of any kind.
 11. **Publication.** Semantic tags and releases with binaries.
 12. **Documentation.** An accurate README. Upstream still advertises limits its
     own code does not apply, and describes itself as a fork of a different
@@ -494,7 +498,7 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 |---|---|---|
 | `seed_disconnect_wait_period` | `5m` | how long a crawled peer stays connected before the PEX reactor disconnects it. Upstream leaves this at zero, which drops peers on the first crawl round, often before they have answered. Too short and the book stays empty; too long and outbound connections pile up |
 | `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour |
-| `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 17 minutes sequentially and about 2 minutes with 8 workers. Lower it on a constrained machine |
+| `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 29 minutes sequentially and about 3m40 with 8 workers. Lower it on a constrained machine |
 | `allow_duplicate_ip` | `true` | allow several peers behind a single IP address. Setting it to `false` also changes the meaning of "already connected", so it interacts with verification |
 | `metrics_listen_addr` | empty | address to serve Prometheus metrics on, for example `127.0.0.1:26660`. Empty disables the endpoint |
 | `metrics_namespace` | `cometbft` | prefix of every exported series. Matches the upstream default, so dashboards written for a full node work unchanged |
@@ -544,6 +548,27 @@ Set `metrics_listen_addr`, restart, and scrape it:
 ```bash
 curl -s 127.0.0.1:26660/metrics | grep '^cometbft_p2p'
 ```
+
+Verification reports its own work, which nothing upstream counts. One series,
+one label, six outcomes, and they always sum to the number of decisions taken:
+
+```bash
+curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_verify_dials_total'
+```
+
+| outcome | meaning |
+|---|---|
+| `success` | the address answered and was promoted |
+| `failure` | the dial failed and the attempt was marked against the book |
+| `skipped_backoff` | a previously failing address is still inside its backoff |
+| `skipped_fresh` | the address was verified recently enough to be trusted |
+| `skipped_local` | nothing was learned: our own address, a banned one, a connection already open or under way |
+| `dropped_full` | the queue was full, the address was dropped |
+
+`skipped_backoff` rising while `failure` falls is the backoff working.
+`dropped_full` rising is not: it means the queue is saturated and the sweep is
+no longer covering the selection. Without a Prometheus setup the same figures
+appear once per sweep in the logs, as a `verification sweep` line at info level.
 
 ---
 
