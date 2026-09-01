@@ -79,6 +79,33 @@ func testAddr(t *testing.T) *p2p.NetAddress {
 	return addr
 }
 
+// fakeSource stands in for a peer whose running state the test controls.
+type fakeSource struct {
+	running bool
+}
+
+func (f fakeSource) IsRunning() bool { return f.running }
+
+func TestShouldQueue(t *testing.T) {
+	r := newTestReactor(t, 1)
+	r.period = time.Minute
+
+	if !r.shouldQueue(fakeSource{running: true}) {
+		t.Error("a running sender means upstream accepted the list")
+	}
+	if r.shouldQueue(fakeSource{running: false}) {
+		t.Error("a stopped sender means upstream refused the list")
+	}
+	if r.shouldQueue(nil) {
+		t.Error("no sender at all, nothing to trust")
+	}
+
+	r.period = 0
+	if r.shouldQueue(fakeSource{running: true}) {
+		t.Error("verification is disabled, nothing should be queued")
+	}
+}
+
 func TestEnqueueFillsTheQueue(t *testing.T) {
 	r := newTestReactor(t, 1)
 	batch := make([]*p2p.NetAddress, queuePerWorker)

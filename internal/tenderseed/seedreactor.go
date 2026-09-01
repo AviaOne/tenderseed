@@ -93,6 +93,39 @@ func (r *SeedReactor) Stop() error {
 	return r.Reactor.Stop()
 }
 
+// runningSource is the part of p2p.Peer the queue decision needs. Keeping it
+// narrow makes the decision testable without a Switch or a live connection.
+type runningSource interface {
+	IsRunning() bool
+}
+
+// shouldQueue reports whether the addresses carried by a PexAddrs message may
+// be verified, given the state the upstream reactor left its sender in.
+//
+// The upstream reactor refuses a list nobody asked for: ReceiveAddrs returns
+// ErrUnsolicitedList (pex_reactor.go:357), not one address of the batch reaches
+// the book, and the sender is stopped and banned before Receive returns
+// (:290-293). Verifying that batch anyway would let an unsolicited peer have
+// addresses of its choosing dialled and promoted, defeating the very control
+// the delegation just applied.
+//
+// A stopped sender is the signal. The book cannot be asked instead: MarkBad
+// only records an address the book already holds (addrbook.go, addBadPeer
+// returns false when addrLookup misses), which is precisely not the case for
+// an inbound peer the seed never dialled.
+//
+// A sender stopped for an unrelated reason costs this batch and nothing more:
+// the periodic sweep re-verifies the served selection anyway.
+func (r *SeedReactor) shouldQueue(src runningSource) bool {
+	// A zero peer_check_period disables verification, so no worker drains the
+	// queue. Drop the addresses here rather than fill it once and then log
+	// every address that follows.
+	if r.period == 0 {
+		return false
+	}
+	return src != nil && src.IsRunning()
+}
+
 // Receive hands every message to the upstream reactor first, then queues the
 // addresses of a PexAddrs message for verification.
 //
@@ -103,15 +136,11 @@ func (r *SeedReactor) Stop() error {
 func (r *SeedReactor) Receive(e p2p.Envelope) {
 	r.Reactor.Receive(e)
 
-	// A zero peer_check_period disables verification, so no worker drains the
-	// queue. Drop the addresses here rather than fill it once and then log
-	// every address that follows.
-	if r.period == 0 {
-		return
-	}
-
 	msg, ok := e.Message.(*tmp2p.PexAddrs)
 	if !ok {
+		return
+	}
+	if !r.shouldQueue(e.Src) {
 		return
 	}
 	addrs, err := p2p.NetAddressesFromProto(msg.Addrs)

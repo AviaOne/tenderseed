@@ -40,12 +40,12 @@ type Seed struct {
 	Transport *p2p.MultiplexTransport
 }
 
-// NewSeed builds every component of a seed node and wires them together.
-// It listens on the configured address but does not start the switch.
 // Version is the software version announced to peers during the handshake.
 // Override it at build time with -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=<value>".
-var Version = "2.0.0"
+var Version = "2.1.1"
 
+// NewSeed builds every component of a seed node and wires them together.
+// It listens on the configured address but does not start the switch.
 func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error) {
 	s := &Seed{
 		Config:  seedConfig,
@@ -233,17 +233,34 @@ func (s *Seed) Wait() {
 	s.Switch.Wait()
 }
 
-// Stop saves the address book to disk and stops the switch.
+// Stop saves the address book to disk, stops the switch and releases the
+// listening socket.
 func (s *Seed) Stop() error {
 	// A signal can arrive between the trap and Switch.Start, in which case
-	// there is nothing to save and nothing to stop.
+	// there is nothing to save and nothing to stop. The transport is already
+	// listening by then, so it is closed on both paths.
 	if !s.Switch.IsRunning() {
 		s.stopMetrics()
+		s.closeTransport()
 		return nil
 	}
 	s.AddrBook.Save()
 	s.stopMetrics()
-	return s.Switch.Stop()
+	err := s.Switch.Stop()
+	s.closeTransport()
+	return err
+}
+
+// closeTransport releases the listening socket. Switch.OnStop stops the peers
+// and the reactors but never touches the transport, so without this the
+// listener is only released when the process exits.
+func (s *Seed) closeTransport() {
+	if s.Transport == nil {
+		return
+	}
+	if err := s.Transport.Close(); err != nil {
+		s.FilteredLogger.Error("could not close transport", "err", err)
+	}
 }
 
 // stopMetrics shuts the metrics server down if one is running.
