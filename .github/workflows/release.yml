@@ -2,7 +2,8 @@ name: release
 
 # Fires on a version tag only. Builds the same artefacts that were published by
 # hand for v2.0.0: one flat tar.gz per architecture holding a single tenderseed
-# binary, plus SHA256SUMS over the two archives.
+# binary, plus SHA256SUMS over the two archives. A manual run is possible, but
+# the job is skipped unless it was started from a tag.
 on:
   push:
     tags:
@@ -11,6 +12,9 @@ on:
 
 jobs:
   release:
+    # Started from a branch, this job would name the release after the branch
+    # and announce that name as the version. Tags only.
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write

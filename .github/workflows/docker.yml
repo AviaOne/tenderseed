@@ -1,7 +1,8 @@
 name: docker
 
 # Fires on a version tag only, never on a push to a branch, so no image is ever
-# built from an intermediate state. Can also be run by hand.
+# built from an intermediate state. A manual run is possible, but the job is
+# skipped unless it was started from a tag.
 on:
   push:
     tags:
@@ -10,6 +11,9 @@ on:
 
 jobs:
   docker:
+    # A manual run on a branch would build an intermediate state, tag the
+    # image with the branch name and overwrite latest. Tags only.
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,12 +32,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Version from the tag
-        run: |
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          else
-            echo "VERSION=" >> "$GITHUB_ENV"
-          fi
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Lowercase the image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tenderseed" >> "$GITHUB_ENV"
       - name: Build and push

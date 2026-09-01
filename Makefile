@@ -1,6 +1,8 @@
-# Version announced to peers. Empty means the value compiled into
-# internal/tenderseed.Version. Release builds pass the Git tag.
-VERSION ?=
+# Version announced to peers. Taken from an exact Git tag on HEAD, so a
+# checkout of v2.1.0 builds a binary announcing 2.1.0. Off a tag it is empty,
+# which keeps the value compiled into internal/tenderseed.Version. CI and the
+# Dockerfile pass it explicitly, which takes precedence over this default.
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null | sed "s/^v//")
 LDFLAGS :=
 ifneq ($(VERSION),)
 LDFLAGS := -X github.com/AviaOne/tenderseed/internal/tenderseed.Version=$(VERSION)
