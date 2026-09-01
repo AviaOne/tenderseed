@@ -29,6 +29,15 @@ echo "addresses:      ${addrs} (+$((addrs - before_addrs)) this run)"
 echo "verified good:  ${good} (+$((good - before_good)) this run)"
 echo "peers dialled:  $(grep -c 'Starting Peer service' "${log}" || true)"
 echo "peers dropped:  $(grep -c 'Stopping Peer service' "${log}" || true)"
-echo "failed checks:  $(grep -c 'address failed verification' "${log}" || true)"
+# Verification figures come from the "verification sweep" line, which is emitted
+# at info level once per peer_check_period. A run shorter than one period
+# produces no such line and these totals stay at zero. Reading the per-address
+# debug lines instead would require log_level = "debug", which changes what is
+# being measured.
+sum_field() { grep -o -- "$1=[0-9]*" "${log}" | cut -d= -f2 | awk '{s+=$1} END {print s+0}'; }
+echo "sweeps:         $(grep -c 'verification sweep' "${log}" || true)"
+echo "checks passed:  $(sum_field verify_success)"
+echo "failed checks:  $(sum_field verify_failure)"
+echo "checks skipped: $(sum_field verify_skipped_backoff)"
 echo "panics:         $(grep -c 'panic' "${log}" || true)"
 echo "errors:         $(grep -cE '^E\[' "${log}" || true)"

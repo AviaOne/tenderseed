@@ -233,7 +233,8 @@ unrelated effects, since shortening the period to refresh the book faster would
 also have hardened the punishment of failures. The cap sits below the 24-hour
 upstream ban so that this reactor is never the slower of the two clocks and no
 third timescale appears. There is no permanent give-up: the crawler alone bans,
-and an address it has evicted never comes back through `GetSelection` anyway.
+and an address it has evicted is no longer in the book, so no selection can
+return it anyway.
 
 **The sweep samples what is served, not the book.** A seed answers a request
 for addresses with `GetSelectionWithBias`, which draws most of its result from
@@ -283,10 +284,10 @@ about the address and is marked.
 
 **What earns a counter.** One outcome per behaviour whose value can be
 interpreted, never one outcome per branch of the code. `skipped_local` groups
-the three exits that dial nothing and learn nothing, our own address, a banned
-one, and a connection already open or under way: none of them is a behaviour
-this fork changed, telling them apart would answer no question anyone has asked,
-and the debug line covers the day one is. `skipped_collision` is separate
+the exits that dial nothing and learn nothing, our own address, a banned one, a
+connection already open or under way, and the defensive nil guards at the top of
+verify: none of them is a behaviour this fork changed, telling them apart would
+answer no question anyone has asked, and the debug line covers the day one is. `skipped_collision` is separate
 because a dial did happen and taught nothing about the address, and because it
 is the only one of the four this version changed: its value is the number of
 unfair marks avoided on live addresses. By the same rule `skipped_backoff` and

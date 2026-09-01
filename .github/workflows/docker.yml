@@ -21,6 +21,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # The whole history, tags included: the publish step below needs them
+          # to know whether this tag is the newest one.
+          fetch-depth: 0
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
@@ -35,6 +39,23 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Lowercase the image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/tenderseed" >> "$GITHUB_ENV"
+      - name: Tags to publish
+        # :latest only moves forward. Publishing a patch on an older line, a
+        # v2.1.2 released after v2.2.1 say, would otherwise overwrite :latest
+        # with the older build and nothing would report it.
+        run: |
+          set -eu
+          newest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          {
+            echo "TAGS<<TAGS_EOF"
+            echo "${IMAGE}:${GITHUB_REF_NAME}"
+            if [ "$newest" = "$GITHUB_REF_NAME" ]; then
+              echo "${IMAGE}:latest"
+            else
+              echo "not the newest tag, $newest is: :latest left alone" >&2
+            fi
+            echo "TAGS_EOF"
+          } >> "$GITHUB_ENV"
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -43,6 +64,4 @@ jobs:
             VERSION=${{ env.VERSION }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ github.ref_name }}
-            ${{ env.IMAGE }}:latest
+          tags: ${{ env.TAGS }}

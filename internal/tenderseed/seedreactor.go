@@ -285,9 +285,14 @@ func (r *SeedReactor) Stop() error {
 // enqueue abandons the rest of a batch without counting it, because no decision
 // was taken on those addresses.
 func (r *SeedReactor) count(result, stage string) {
-	if counter, ok := r.counts[verifyOutcome{result, stage}]; ok {
-		counter.Add(1)
+	// Both sinks are gated by the same membership test. Publishing a pair that
+	// is not in verifyOutcomes would create a Prometheus series the summary
+	// line, which walks that list, could never report: the two would tell
+	// different stories, which is exactly what logSweep promises they cannot.
+	if _, ok := r.counts[verifyOutcome{result, stage}]; !ok {
+		return
 	}
+	r.counts[verifyOutcome{result, stage}].Add(1)
 	if r.metrics != nil {
 		r.metrics.observe(result, stage)
 	}

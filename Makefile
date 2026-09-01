@@ -16,13 +16,13 @@ all: build
 # build binaries for current platform
 build: build/tenderseed
 
-build/tenderseed: cmd/tenderseed/main.go $(SOURCES) go.mod
+build/tenderseed: cmd/tenderseed/main.go $(SOURCES) go.mod go.sum
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o ./build/tenderseed ./cmd/tenderseed
 
 # build linux binaries
 build-linux: build/tenderseed.elf
 
-build/tenderseed.elf: cmd/tenderseed/main.go $(SOURCES) go.mod
+build/tenderseed.elf: cmd/tenderseed/main.go $(SOURCES) go.mod go.sum
 	CGO_ENABLED=0 GOOS=linux go build -ldflags "$(LDFLAGS)" -o ./build/tenderseed.elf ./cmd/tenderseed
 
 test:

@@ -24,11 +24,14 @@ const DefaultSeedDisconnectWaitPeriod = 5 * time.Minute
 const DefaultMetricsNamespace = "cometbft"
 
 // DefaultPeerCheckPeriod is how often the seed re-verifies the addresses it
-// would serve. GetSelection returns at most maxGetSelection (250) addresses
-// and a dial costs at most 7s: 1s to connect (transport.go dialTimeout), then
-// two consecutive 3s handshake deadlines, one for the secret connection and
-// one for the node info exchange. A sweep of a full selection therefore takes
+// would serve. A selection holds at most maxGetSelection (250) addresses and a
+// dial costs at most 7s: 1s to connect (transport.go dialTimeout), then two
+// consecutive 3s handshake deadlines, one for the secret connection and one
+// for the node info exchange. A sweep of a full selection therefore takes
 // about 3m40 with the default worker count, comfortably inside this period.
+//
+// The sweep draws that selection with the same bias the seed serves with, see
+// sweepRoutine; the ceiling is the same either way.
 const DefaultPeerCheckPeriod = 10 * time.Minute
 
 // DefaultPeerCheckWorkers is how many verification dials run in parallel.

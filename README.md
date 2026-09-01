@@ -564,7 +564,7 @@ curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_verify_dials_total'
 | `failure` | verify | the dial failed and the attempt was marked against the book |
 | `skipped_backoff` | enqueue, verify | a previously failing address is still inside its backoff |
 | `skipped_fresh` | enqueue, verify | the address was verified recently enough to be trusted |
-| `skipped_local` | verify | nothing was dialled and nothing learned: our own address, a banned one, a connection already open or under way |
+| `skipped_local` | verify | nothing was dialled and nothing learned: our own address, a banned one, a connection already open or under way, or a defensive guard |
 | `skipped_collision` | verify | a dial happened and taught nothing: a peer connected to us while we were dialling it. This is the count of unfair marks avoided on live addresses |
 | `dropped_full` | enqueue | the queue was full, the address was dropped |
 
