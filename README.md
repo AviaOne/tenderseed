@@ -6,10 +6,11 @@ Maintained fork of [binaryholdings/tenderseed](https://github.com/binaryholdings
 by [AviaOne.com](https://aviaone.com), rebuilt on CometBFT `v0.40.x` and taught to
 verify the addresses it hands out.
 
-Released as **v2.0.0**. Upstream carries no tag at all and has not moved since
-February 2023, so the version marks the break: everything before this is
-Tenderseed v1. The binary, the flags and the file layout are unchanged, so it is
-a drop-in replacement.
+Released under semantic tags, starting at **v2.0.0**. Upstream carries no tag at
+all and has not moved since February 2023, so the major version marks the break:
+everything before this is Tenderseed v1. The binary, the flags and the file
+layout are unchanged, so it is a drop-in replacement. The current release is on
+the [releases page](https://github.com/AviaOne/tenderseed/releases).
 
 A seed node keeps an address book of live peers and hands out addresses to nodes
 that ask for them. It does not relay or store blocks or transactions, so it costs
@@ -28,15 +29,28 @@ affect you right now.
 | The address book is never qualified. `MarkGood` is never called, so every entry stays in a *new* bucket and the 70% bias toward *old* buckets has nothing to select | Your seed hands out addresses that may be long dead. It serves noise instead of peers | Addresses are dialled before being served, and the served selection is re-checked on a timer |
 | `SeedDisconnectWaitPeriod` is never set, so it is zero. Every crawled peer is dropped on the first crawl round, often before it has answered | Your address book barely grows | The value is exposed, documented, and defaults to 5 minutes |
 
-**The measurement that matters.** Two production seeds ran the upstream binary
-for years and held **4 and 6 addresses**. Only the binary was replaced with this
-fork: same machine, same configuration, same address book files, same chains.
-Four hours later those two seeds held **1263 and 568 addresses**, of which 28 and
-40 were verified reachable and promoted.
+**Where it starts.** Two production seeds ran the upstream binary for years and
+held **4 and 6 addresses**, not one of which had ever been verified. Only the
+binary was replaced: same machine, same configuration, same address book files,
+same chains.
 
-That is a before and after on the same seeds rather than a benchmark, and one
-reservation remains: `addr_book_strict` also rejects entries, so it may account
-for part of the gap. What is measured is stated; nothing more is claimed.
+**What follows has two regimes**, and quoting only the first would be
+misleading:
+
+- **Inside the first day**, a book started from empty climbs to about **1263 and
+  568** addresses on those two chains. Reproduced over two independent cycles.
+- **In steady state**, past roughly 35 hours, the book settles at **ten to twenty
+  addresses, nearly all of them verified reachable**: 10 of 10 and 14 of 15 after
+  eight days. Upstream evicts an address after 16 failed dials, which is where
+  the rest goes. A book of ten live addresses is not a smaller book, it is the
+  same book without the dead entries.
+
+**The figure that matters to you is what a new node gets from the seed**, and it
+is the one you can reproduce: start a node with an empty address book and one
+single seed, wait 90 seconds, count what it collected. From this seed, a new node
+collected **473 addresses**. Of the eight public seeds tested the same way on the
+same chain, the best returned 781 and four returned nothing at all. Method and
+limits in [FORK.md](FORK.md), section 5.4.
 
 ---
 
@@ -334,15 +348,17 @@ keeps the same address and the same peers.
 
 ```bash
 export CHAIN_ID=cosmoshub-4
-sudo -u tenderseed bash -c "cd ~/tenderseed && git fetch --tags && git checkout v2.1.0 && make build"
+sudo -u tenderseed bash -c 'cd ~/tenderseed && git fetch --tags && git checkout "$(git tag --sort=-v:refname | head -n1)" && make build'
 sudo systemctl stop tenderseed-${CHAIN_ID}
 sudo install -m 0755 /home/tenderseed/tenderseed/build/tenderseed /usr/local/bin/tenderseed
 sudo systemctl start tenderseed-${CHAIN_ID}
 tenderseed version
 ```
 
-Replace `v2.1.0` with the tag you are moving to, and repeat the two
-systemctl lines for every chain you serve.
+That checks out the newest tag. Check out a specific one instead if you pin
+versions, and repeat the two systemctl lines for every chain you serve. The
+last command prints the tag the new binary was built from, so it confirms the
+update landed.
 
 Left untouched by the update, on every chain home:
 
@@ -371,7 +387,8 @@ docker pull ghcr.io/aviaone/tenderseed:latest
 docker tag ghcr.io/aviaone/tenderseed:latest tenderseed:latest
 ```
 
-Pin a version instead of `latest` if you prefer: `ghcr.io/aviaone/tenderseed:v2.0.0`.
+Pin a version instead of `latest` if you prefer, using a tag from the
+[releases page](https://github.com/AviaOne/tenderseed/releases).
 
 Or build it yourself from source:
 
@@ -441,8 +458,8 @@ mount. The mounted directory holds `config/node_key.json`,
 touches, so the seed keeps its identity, its settings and its peers.
 
 ```bash
-docker pull ghcr.io/aviaone/tenderseed:v2.1.0
-docker tag ghcr.io/aviaone/tenderseed:v2.1.0 tenderseed:latest
+docker pull ghcr.io/aviaone/tenderseed:latest
+docker tag ghcr.io/aviaone/tenderseed:latest tenderseed:latest
 docker rm -f tenderseed-${CHAIN_ID}
 docker run --rm tenderseed:latest version
 ```

@@ -173,6 +173,21 @@ All four measured in its reactor source.
 4. **`IsDialingOrExistingAddress` before every dial**, which avoids the
    already-connected-counted-as-failure defect described in section 1.2.
 
+### 3.5 An unsolicited address list is not verified
+
+This fork delegates every message to the upstream reactor first. For a list of
+addresses nobody asked for, that reactor returns `ErrUnsolicitedList`, no address
+reaches the book, and the sender is stopped and banned for 24 hours before the
+call returns. Verifying that payload afterwards would have let an unsolicited
+peer get addresses of its choosing dialled and promoted, which is exactly the
+control that was just applied. The batch is dropped instead.
+
+The signal is the sender being stopped, not the book. `MarkBad` only records an
+address the book already holds, so an inbound peer the seed never dialled is
+never marked banned and asking the book would have filtered nothing. A sender
+stopped for an unrelated reason costs that one batch, which the periodic sweep
+picks up again.
+
 ---
 
 ## 4. What the defaults are anchored to
@@ -246,8 +261,57 @@ and 7.0 percent, stated without an explanation because none was measured.
 
 **Stated honestly**: this is a before and after on the same seeds, not a
 controlled benchmark. `addr_book_strict` also rejects addresses and may account
-for part of the gap. What is measured is two nearly empty books on one side and
-more than eighteen hundred addresses across two chains on the other.
+for part of the gap.
+
+#### What happens after those four hours
+
+Both books were emptied on purpose and the two seeds were then left alone, to
+measure a whole cycle rather than its first hours. First chain then second:
+
+| age | book total | verified |
+|---|---|---|
+| 4 min | 947 and 460 | 13 and 26 |
+| 24 h | 1263 and 568 | 39 and 54 |
+| 55 h | 20 and 23 | 19 and 20 |
+| 8 days | 10 and 15 | 10 and 14 |
+
+The climb is reproducible: two independent cycles started from an empty book
+reached the same totals. So is the fall that follows, and it is not a regression
+of this fork. It is upstream eviction: `ensurePeers` calls `dialPeer`, which
+after `maxAttemptsToDial` (16) failed attempts calls `MarkBad(addr, 24h)`, which
+removes the address. Sixteen attempts take about 35 hours, and the drop happens
+between 24 and 55 hours. `MarkAttempt` deletes nothing on its own; its counter
+only feeds `isBad()`, read by `expireNew` when a *new* bucket is full.
+
+What survives is almost entirely verified: 10 of 10 and 14 of 15 in the *old*
+bucket after eight days. Verified addresses fall too, because an address promoted
+once and dead later is evicted like any other, `MarkBad` does not look at the
+bucket.
+
+**So 1263 and 568 measure the first hours, not the regime.** In regime this fork
+holds ten to twenty addresses, nearly all verified reachable, against 4 and 6
+addresses of which zero were verified for the upstream binary on the same seeds.
+
+### 5.4 What a new node actually collects
+
+The size of a book on disk is not what an operator gets out of a seed. What
+matters is how many addresses a fresh node collects when it starts from that
+seed alone, and that is directly measurable by anyone.
+
+Method: a throwaway home directory, an empty address book, a dedicated port, one
+single seed configured, the chain that seed serves, 90 seconds, then count the
+entries in `data/addrbook.json`. One pass per seed, the same 90 seconds for each,
+the same day.
+
+On one Cosmos chain, against the eight public seeds listed for it, this one
+included, a new node collected **473 addresses from this seed**. The best of the
+eight returned 781, and **four of the eight returned nothing at all**. Two
+further passes were interrupted and are excluded rather than reported.
+
+Stated as a limit: one chain, one pass per seed, one day, and no attempt to
+explain what the seeds returning nothing were doing at that moment. It places
+this seed in the leading group for the only thing a seed exists for, which is
+bootstrapping a new node. It is not a ranking.
 
 ---
 
@@ -287,9 +351,11 @@ Decided and assumed:
   exit code, which a unit file or a script can act on. A `Restart=always` unit
   facing a bad configuration now loops on a readable message instead of a
   goroutine dump.
-- **The container workflow was neutralised.** Upstream pushed a public image on
-  every push to its default branch, with no build check, no lint and no test. It
-  is now triggered manually.
+- **The container workflow never publishes an intermediate state.** Upstream
+  pushed a public image on every push to its default branch, with no build check,
+  no lint and no test. Here it fires on a version tag, and a manual run started
+  from anything other than a tag is skipped, so `:latest` can only ever point at
+  a released tag.
 - **Every Go file passes `gofmt`**, which was true of none of them upstream.
 - **The seed registers its own address in its book**, and the verification path
   skips any address carrying its own node ID, so verification never dials the
