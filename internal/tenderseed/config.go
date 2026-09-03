@@ -1,6 +1,7 @@
 package tenderseed
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -55,25 +56,37 @@ const (
 //
 //nolint:lll
 type Config struct {
-	ListenAddress            string `toml:"laddr" comment:"Address to listen for incoming connections"`
-	ChainID                  string `toml:"chain_id" comment:"network identifier of the chain this seed serves"`
-	Stack                    string `toml:"stack" comment:"p2p stack of the chain this seed serves (\"cosmos\" or \"tm2\"); empty means cosmos"`
-	AppVersion               string `toml:"app_version" comment:"tm2 only: value announced for the \"app\" entry of the version set; it belongs to the chain, not to this binary. Empty matches a chain whose app version is not semver, which is what gno.land announces today"`
-	LogLevel                 string `toml:"log_level" comment:"logging level to filter output (\"debug\", \"info\", \"warn\", \"error\" or \"none\")"`
-	NodeKeyFile              string `toml:"node_key_file" comment:"path to node_key (relative to the seed home directory (-home) or an absolute path)"`
-	AddrBookFile             string `toml:"addr_book_file" comment:"path to address book (relative to the seed home directory (-home) or an absolute path)"`
-	AddrBookStrict           bool   `toml:"addr_book_strict" comment:"Set true for strict routability rules\n Set false for private or local networks"`
-	MaxNumInboundPeers       int    `toml:"max_num_inbound_peers" comment:"maximum number of inbound connections"`
-	MaxNumOutboundPeers      int    `toml:"max_num_outbound_peers" comment:"maximum number of outbound connections"`
-	MaxPacketMsgPayloadSize  int    `toml:"max_packet_msg_payload_size" comment:"maximum size of a message packet payload, in bytes"`
-	Seeds                    string `toml:"seeds" comment:"seed nodes we can use to discover peers"`
-	SeedDisconnectWaitPeriod string `toml:"seed_disconnect_wait_period" comment:"how long a crawled peer stays connected before being disconnected, as a duration (\"5m\", \"30s\", \"1h\")"`
-	AllowDuplicateIP         bool   `toml:"allow_duplicate_ip" comment:"allow multiple peers from the same IP address"`
-	PeerCheckPeriod          string `toml:"peer_check_period" comment:"how often served addresses are re-verified, as a duration; 0 disables verification"`
-	PeerCheckWorkers         int    `toml:"peer_check_workers" comment:"how many verification dials run in parallel; 0 means the default of 8, it does not disable anything"`
-	MetricsListenAddress     string `toml:"metrics_listen_addr" comment:"address to serve Prometheus metrics on; empty disables them"`
-	Moniker                  string `toml:"moniker" comment:"name announced to peers; empty means <chain_id>-seed"`
-	MetricsNamespace         string `toml:"metrics_namespace" comment:"prefix of every exported metric series"`
+	// Field order is the order of the generated file, see WriteConfigToFile.
+	// The keys an operator may have to change come first; the rest is grouped
+	// by what it governs. The comment of the first key of a group carries the
+	// banner that opens it. A comment already starting with "#" is not
+	// prefixed again by the encoder, which is what makes a full width banner
+	// possible; every following line of a comment receives one "#", so those
+	// lines are written one character short on purpose.
+
+	ChainID       string `toml:"chain_id" comment:"##############################################################\n##              WHAT YOU MAY NEED TO CHANGE               ###\n##                                                        ###\n##        after any change here, restart the seed:        ###\n##        systemctl restart tenderseed-<chain_id>         ###\n#############################################################\n network identifier of the chain this seed serves"`
+	Stack         string `toml:"stack" comment:"p2p stack of that chain, \"cosmos\" or \"tm2\"; empty means cosmos.\n It cannot be guessed from chain_id, and it decides the format of\n the node key and of the address book, so a home directory\n belongs to one stack"`
+	Seeds         string `toml:"seeds" comment:"seed nodes we can use to discover peers, in the identity format\n of the stack above. May be emptied once the address book is\n populated"`
+	ListenAddress string `toml:"laddr" comment:"Address to listen for incoming connections"`
+	Moniker       string `toml:"moniker" comment:"name announced to peers; empty means <chain_id>-seed. It is a\n label only: nothing resolves it and nothing dials it"`
+	AppVersion    string `toml:"app_version" comment:"tm2 only, usually empty: value announced for the \"app\" entry of\n the version set; it belongs to the chain, not to this binary"`
+
+	NodeKeyFile  string `toml:"node_key_file" comment:"##############################################################\n##                         FILES                          ###\n#############################################################\n path to node_key (relative to the seed home directory (-home)\n or an absolute path)"`
+	AddrBookFile string `toml:"addr_book_file" comment:"path to address book (relative to the seed home directory\n (-home) or an absolute path)"`
+
+	MaxNumInboundPeers      int  `toml:"max_num_inbound_peers" comment:"##############################################################\n##                     NETWORK LIMITS                     ###\n#############################################################\n maximum number of inbound connections"`
+	MaxNumOutboundPeers     int  `toml:"max_num_outbound_peers" comment:"maximum number of outbound connections"`
+	MaxPacketMsgPayloadSize int  `toml:"max_packet_msg_payload_size" comment:"maximum size of a message packet payload, in bytes"`
+	AllowDuplicateIP        bool `toml:"allow_duplicate_ip" comment:"allow multiple peers from the same IP address"`
+	AddrBookStrict          bool `toml:"addr_book_strict" comment:"Set true for strict routability rules\n Set false for private or local networks"`
+
+	SeedDisconnectWaitPeriod string `toml:"seed_disconnect_wait_period" comment:"##############################################################\n##                     SEED BEHAVIOUR                     ###\n#############################################################\n how long a crawled peer stays connected before being\n disconnected, as a duration (\"5m\", \"30s\", \"1h\")"`
+	PeerCheckPeriod          string `toml:"peer_check_period" comment:"how often served addresses are re-verified, as a duration;\n 0 disables verification"`
+	PeerCheckWorkers         int    `toml:"peer_check_workers" comment:"cosmos only: how many verification dials run in parallel;\n 0 means the default of 8, it does not disable anything"`
+
+	LogLevel             string `toml:"log_level" comment:"##############################################################\n##                  LOGGING AND METRICS                   ###\n#############################################################\n logging level to filter output (\"debug\", \"info\", \"warn\",\n \"error\" or \"none\")"`
+	MetricsListenAddress string `toml:"metrics_listen_addr" comment:"address to serve Prometheus metrics on; empty disables them"`
+	MetricsNamespace     string `toml:"metrics_namespace" comment:"prefix of every exported metric series. Leave it as it is unless\n your dashboards need another prefix"`
 }
 
 // SeedStack returns the stack this seed serves. An empty value yields
@@ -167,7 +180,16 @@ func (config Config) Validate() error {
 // LoadOrGenConfig loads a seed config from file if the file exists
 // If the file does not exist, make a default config, write it to the file
 // Return either the loaded config or a default config
-func LoadOrGenConfig(filePath string) (*Config, error) {
+//
+// stack is the stack to record in a file that has to be created, empty for
+// the default. It is an argument rather than a value the caller sets
+// afterwards because the identity of a seed is generated on the very first
+// run, by the same command that creates this file, and the format of that
+// identity belongs to the stack. Without a way to declare the stack at
+// creation time, an operator serving TM2 would be handed a Cosmos identity
+// and would have to delete it. A file that already exists is never
+// rewritten, so this argument only ever affects a first run.
+func LoadOrGenConfig(filePath string, stack string) (*Config, error) {
 	config, err := LoadConfigFromFile(filePath)
 	if err == nil {
 		return config, nil
@@ -177,6 +199,9 @@ func LoadOrGenConfig(filePath string) (*Config, error) {
 
 	// file did not exist
 	config = DefaultConfig()
+	if stack != "" {
+		config.Stack = stack
+	}
 	err = WriteConfigToFile(filePath, *config)
 	return config, err
 }
@@ -241,37 +266,45 @@ func UnknownKeys(file string) []string {
 	return unknown
 }
 
-// WriteConfigToFile writes the seed config to file
+// WriteConfigToFile writes the seed config to file.
+//
+// The encoder is asked to preserve the declaration order of Config rather
+// than sort the keys, which is its default. Sorted, the file opens on the
+// address book paths and buries chain_id and seeds in the middle, so the
+// values an operator has to supply are the ones they have to hunt for. Order
+// is a property of the generated file only: nothing reads a config.toml by
+// position, and an existing file is never rewritten.
 func WriteConfigToFile(file string, config Config) error {
-	bytes, err := toml.Marshal(config)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Order(toml.OrderPreserve).Encode(config); err != nil {
 		return err
 	}
 
-	return os.WriteFile(file, bytes, 0o600)
+	return os.WriteFile(file, buf.Bytes(), 0o600)
 }
 
 // DefaultConfig returns a seed config initialized with default values
 func DefaultConfig() *Config {
+	// Same order as the struct, so the two stay readable side by side.
 	return &Config{
-		ListenAddress:            "tcp://0.0.0.0:26656",
 		ChainID:                  "",
 		Stack:                    StackCosmos,
+		Seeds:                    "",
+		ListenAddress:            "tcp://0.0.0.0:26656",
+		Moniker:                  "",
 		AppVersion:               "",
-		LogLevel:                 "info",
 		NodeKeyFile:              "config/node_key.json",
 		AddrBookFile:             "data/addrbook.json",
-		AddrBookStrict:           true,
 		MaxNumInboundPeers:       100,
 		MaxNumOutboundPeers:      60,
 		MaxPacketMsgPayloadSize:  1024,
-		Seeds:                    "",
-		SeedDisconnectWaitPeriod: "5m",
 		AllowDuplicateIP:         true,
+		AddrBookStrict:           true,
+		SeedDisconnectWaitPeriod: "5m",
 		PeerCheckPeriod:          "10m",
 		PeerCheckWorkers:         DefaultPeerCheckWorkers,
+		LogLevel:                 "info",
 		MetricsListenAddress:     "",
-		Moniker:                  "",
 		MetricsNamespace:         DefaultMetricsNamespace,
 	}
 }

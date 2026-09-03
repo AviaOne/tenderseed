@@ -3,6 +3,7 @@ package tenderseed
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -298,5 +299,93 @@ func TestAppVersionIsAKeyAndDefaultsToEmpty(t *testing.T) {
 
 	if got := UnknownKeys(writeConfig(t, "app_version = \"dev\"\n")); len(got) != 0 {
 		t.Errorf("app_version must be a known key, got %v", got)
+	}
+}
+
+// The generated file is meant to be read by a human, so its order is part of
+// what it is: the keys an operator may have to change come first. The encoder
+// sorts alphabetically unless told otherwise, and nothing else would notice a
+// silent return to that default, so this pins it.
+func TestGeneratedConfigKeepsFieldOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteConfigToFile(path, *DefaultConfig()); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	text := string(body)
+
+	// Alphabetical order would put every one of these before chain_id.
+	for _, key := range []string{"addr_book_file", "addr_book_strict", "allow_duplicate_ip"} {
+		if strings.Index(text, "\n"+key+" ") < strings.Index(text, "\nchain_id ") {
+			t.Errorf("%s comes before chain_id, the file is sorted again", key)
+		}
+	}
+
+	// And the groups follow one another.
+	order := []string{"chain_id", "stack", "seeds", "laddr", "node_key_file",
+		"max_num_inbound_peers", "seed_disconnect_wait_period", "log_level"}
+	previous := -1
+	for _, key := range order {
+		at := strings.Index(text, "\n"+key+" ")
+		if at < 0 {
+			t.Fatalf("%s is absent from the generated file", key)
+		}
+		if at < previous {
+			t.Errorf("%s is out of order", key)
+		}
+		previous = at
+	}
+
+	// A file a human reads needs its banners.
+	if !strings.Contains(text, "WHAT YOU MAY NEED TO CHANGE") {
+		t.Error("the first banner is missing")
+	}
+}
+
+// The stack has to be recorded when the file is created, because the same
+// first command creates the node identity and the identity format belongs to
+// the stack.
+func TestStackIsRecordedWhenTheFileIsCreated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	config, err := LoadOrGenConfig(path, StackTM2)
+	if err != nil {
+		t.Fatalf("generating config: %v", err)
+	}
+	if config.Stack != StackTM2 {
+		t.Errorf("Stack = %q, want %q", config.Stack, StackTM2)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if !strings.Contains(string(body), `stack = "tm2"`) {
+		t.Error("the generated file does not record the stack")
+	}
+
+	// An existing file is never rewritten, so a later run without the
+	// argument keeps what the operator has.
+	again, err := LoadOrGenConfig(path, "")
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if again.Stack != StackTM2 {
+		t.Errorf("Stack = %q after a second load, want %q", again.Stack, StackTM2)
+	}
+}
+
+// Without the argument the default stands, which is what a Cosmos operator
+// gets and what every version up to v2.2.2 wrote.
+func TestGeneratedConfigDefaultsToCosmos(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	config, err := LoadOrGenConfig(path, "")
+	if err != nil {
+		t.Fatalf("generating config: %v", err)
+	}
+	if config.Stack != StackCosmos {
+		t.Errorf("Stack = %q, want %q", config.Stack, StackCosmos)
 	}
 }

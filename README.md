@@ -1,10 +1,14 @@
 # Tenderseed
 
-A lightweight seed node for **CometBFT** p2p networks.
+A lightweight seed node for **CometBFT** and **Tendermint2** p2p networks.
 
 Maintained fork of [binaryholdings/tenderseed](https://github.com/binaryholdings/tenderseed)
-by [AviaOne.com](https://aviaone.com), rebuilt on CometBFT `v0.40.x` and taught to
-verify the addresses it hands out.
+by [AviaOne.com](https://aviaone.com), rebuilt on CometBFT `v0.40.x`, taught to
+verify the addresses it hands out, and since v3.0.0 able to serve gno.land as
+well.
+
+One binary serves either family. Which one it serves is declared once, at
+install time, and everything else in this document is the same for both.
 
 Released under semantic tags, starting at **v2.0.0**. Upstream carries no tag at
 all and has not moved since February 2023, so the major version marks the break:
@@ -21,7 +25,8 @@ almost nothing to run.
 ## Already running Tenderseed? Read this first
 
 If you operate a seed built from the upstream project, three measured problems
-affect you right now.
+affect you right now. Everything in this section was measured on Cosmos chains,
+which is the only family upstream ever served.
 
 | Problem in upstream Tenderseed | What it means for you | Fixed here |
 |---|---|---|
@@ -41,9 +46,10 @@ misleading:
   568** addresses on those two chains. Reproduced over two independent cycles.
 - **In steady state**, past roughly 35 hours, the book settles at **ten to twenty
   addresses, nearly all of them verified reachable**: 10 of 10 and 14 of 15 after
-  eight days. Upstream evicts an address after 16 failed dials, which is where
-  the rest goes. A book of ten live addresses is not a smaller book, it is the
-  same book without the dead entries.
+  eight days. Upstream evicts an address after seventeen failed dials, and on a
+  seed that eviction is permanent until the process restarts, which is where the
+  rest goes. A book of ten live addresses is not a smaller book, it is the same
+  book without the dead entries.
 
 **The figure that matters to you is what a new node gets from the seed**, and it
 is the one you can reproduce: start a node with an empty address book and one
@@ -56,7 +62,7 @@ limits in [FORK.md](FORK.md), section 5.4.
 
 ## What this fork changes
 
-Thirteen changes, all measured against upstream. See [FORK.md](FORK.md) for the
+Fourteen changes, all measured against upstream. See [FORK.md](FORK.md) for the
 evidence behind each one.
 
 1. **Supported p2p stack.** CometBFT `v0.40.0`, pinned, instead of Tendermint
@@ -95,6 +101,11 @@ evidence behind each one.
     carrying its own node ID, so verification never dials the seed itself. An
     unspecified `laddr` such as `0.0.0.0` is not registered, because the book
     compares full address strings and such an entry could never match.
+14. **A second family of chains.** Since v3.0.0 the same binary also serves
+    Tendermint2, the p2p code of gno.land, where it answers from a verified
+    address book instead of from the connections it happens to hold, and hangs
+    up once it has answered. Neither exists in that stack. One process serves
+    one family, declared at install time.
 
 ---
 
@@ -145,10 +156,18 @@ without editing anything. Set them once, in the terminal you are working in:
 ```bash
 export CHAIN_ID=cosmoshub-4
 export SEED_PORT=26656
+export STACK=cosmos
 ```
 
 Replace `cosmoshub-4` with the chain you serve, and pick a free port if 26656 is
 already taken on your machine.
+
+`STACK` is the p2p family the chain belongs to: `cosmos` for a CometBFT chain,
+`tm2` for gno.land. Nothing in a chain identifier says which one it is, on
+either side, so it cannot be guessed and you have to state it. It decides the
+format of your seed identity and of your address book, so **set it before step
+4**, where the identity is created. A home directory belongs to one family and
+cannot be moved to the other.
 
 Two things to keep in mind:
 
@@ -192,13 +211,16 @@ port, and its own systemd service.
 
 ```bash
 sudo -u tenderseed mkdir -p /home/tenderseed/.tenderseed/${CHAIN_ID}
-sudo -u tenderseed tenderseed -home /home/tenderseed/.tenderseed/${CHAIN_ID} show-node-id
+sudo -u tenderseed tenderseed -home /home/tenderseed/.tenderseed/${CHAIN_ID} -stack ${STACK} show-node-id
 ```
 
 That command does two things: it creates `config/config.toml` and
 `config/node_key.json` if they do not exist, and it prints your node identity.
+`-stack` is what tells it which identity format to create, and it is recorded in
+the configuration, so you do not have to pass it again.
 
-The identity looks like `0123456789abcdef0123456789abcdef01234567`. Other
+The identity looks like `0123456789abcdef0123456789abcdef01234567` on a Cosmos
+chain, and like `g1lhfv35wyvr9ggtnvjluwvsujnazeqjs050tgek` on gno.land. Other
 operators need it to reach your seed, in the form
 `<node-id>@<your-host>:<port>`.
 
@@ -209,7 +231,8 @@ operators need it to reach your seed, in the form
 ### Step 5 - Configure
 
 The first run wrote a complete `config.toml` containing every option, its
-default value, and a comment describing it. Open it:
+default value, and a comment describing it. What you may have to change sits at
+the top, under a banner; everything below it has a working default. Open it:
 
 ```bash
 sudo -u tenderseed nano /home/tenderseed/.tenderseed/${CHAIN_ID}/config/config.toml
@@ -224,8 +247,19 @@ chain_id = "cosmoshub-4"
 seeds = "<node-id>@<host>:<port>,<node-id>@<host>:<port>"
 ```
 
-Get seed addresses for your chain from its Chain Registry entry, or from
-[ABS](https://aviaone.com/blockchains-service/).
+Seed addresses carry the identity format of their own family, so a list written
+for one is unusable on the other. Get the ones for your chain from its Chain
+Registry entry, or from [ABS](https://aviaone.com/blockchains-service/).
+
+On gno.land only, one further key may need a value:
+
+```toml
+# tm2 only: value announced for the "app" entry of the version set
+app_version = ""
+```
+
+It belongs to the chain rather than to this binary, and empty matches what
+gno.land announces today.
 
 The listening port, which must match the `SEED_PORT` you opened in UFW:
 
@@ -306,8 +340,15 @@ Check that the address book is filling up. After a few minutes it should hold
 far more than a handful of entries:
 
 ```bash
+# cosmos
 sudo -u tenderseed python3 -c "import json;print(len(json.load(open('/home/tenderseed/.tenderseed/${CHAIN_ID}/data/addrbook.json'))['addrs']))"
+
+# tm2
+sudo -u tenderseed python3 -c "import json;print(len(json.load(open('/home/tenderseed/.tenderseed/${CHAIN_ID}/data/addrbook.json'))['peers']))"
 ```
+
+The two families write the same file under two shapes, which is why the command
+differs.
 
 Verify the port is reachable from outside your machine, from another host:
 
@@ -410,9 +451,10 @@ match yours, and Docker never changes the ownership of a bind mount.
 ```bash
 export CHAIN_ID=cosmoshub-4
 export SEED_PORT=26656
+export STACK=cosmos
 mkdir -p ~/tenderseed-data/${CHAIN_ID}
 docker run --rm --user "$(id -u):$(id -g)" \
-  -v ~/tenderseed-data/${CHAIN_ID}:/data tenderseed:latest show-node-id
+  -v ~/tenderseed-data/${CHAIN_ID}:/data tenderseed:latest -stack ${STACK} show-node-id
 ```
 
 This writes `config/config.toml` and `config/node_key.json` into
@@ -424,7 +466,8 @@ This writes `config/config.toml` and `config/node_key.json` into
 nano ~/tenderseed-data/${CHAIN_ID}/config/config.toml
 ```
 
-Set `chain_id` and `seeds` as described in the Linux section.
+Set `chain_id` and `seeds` as described in the Linux section. `stack` is
+already recorded from step 2.
 
 ### Step 4 - Run
 
@@ -483,6 +526,8 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 |---|---|---|
 | `laddr` | `tcp://0.0.0.0:26656` | address and port to listen on for incoming connections |
 | `chain_id` | empty | network identifier of the chain this seed serves |
+| `stack` | `cosmos` | p2p family of that chain, `cosmos` or `tm2`. Empty means `cosmos`, so a file written before this key existed keeps its behaviour. An unknown value refuses to start |
+| `app_version` | empty | gno.land only: value announced for the `app` entry of the version set. It belongs to the chain, not to this binary |
 | `seeds` | empty | comma-separated `<node-id>@<host>:<port>` list used to bootstrap discovery. May be emptied once the address book is populated |
 | `log_level` | `info` | `debug`, `info`, `warn`, `error` or `none`. It applies to the seed own lines as well, so `none` leaves only the startup banner |
 | `node_key_file` | `config/node_key.json` | path to the node identity, relative to the home directory or absolute |
@@ -501,7 +546,7 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 | `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 29 minutes sequentially and about 3m40 with 8 workers. Lower it on a constrained machine |
 | `allow_duplicate_ip` | `true` | allow several peers behind a single IP address. Setting it to `false` also changes the meaning of "already connected", so it interacts with verification |
 | `metrics_listen_addr` | empty | address to serve Prometheus metrics on, for example `127.0.0.1:26660`. Empty disables the endpoint. A port already taken is logged and the seed keeps serving peers, unlike an unusable `metrics_namespace` which refuses to start: the first can resolve itself, the second never will |
-| `metrics_namespace` | `cometbft` | prefix of every exported series. Matches the upstream default, so dashboards written for a full node work unchanged |
+| `metrics_namespace` | `cometbft` | prefix of every exported series. Matches the upstream default, so dashboards written for a full node work unchanged. The same prefix is used on gno.land, where the name is inherited rather than accurate |
 | `moniker` | empty | name announced to peers. Empty means `<chain_id>-seed` |
 
 ### Flags and environment variables
@@ -514,6 +559,7 @@ file but not the flags.
 -config     path to config.toml, relative to home or absolute
 -chain-id   overrides chain_id
 -seeds      overrides seeds
+-stack      overrides stack, and sets it when config.toml is created
 ```
 
 ```

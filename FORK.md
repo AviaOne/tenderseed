@@ -10,6 +10,9 @@ process. Where something is a judgement rather than a measurement, it says so.
 
 ## 1. The state of the field
 
+Every count in this section was taken on 2026-09-03 and describes repositories
+that go on living. Re-measure before quoting it.
+
 ### 1.1 Upstream
 
 [binaryholdings/tenderseed](https://github.com/binaryholdings/tenderseed) at
@@ -53,7 +56,7 @@ credited for the method; none of its code is used here, since this fork targets
 ### 1.3 Dedicated seeds outside the fork tree
 
 - [voluzi/cosmoseed](https://github.com/voluzi/cosmoseed): the technical state of
-  the art, 28 commits, 21 tags. Pinned to a CometBFT v2 release candidate that
+  the art, 32 commits, 21 tags. Pinned to a CometBFT v2 release candidate that
   upstream withdrew, so it sits outside every supported family. Its design is
   transposable; its code is not, because the v2 API differs.
 - `kwilteam/cometseed`: a dedicated seed on CometBFT `v0.38.7`, ten commits, no
@@ -177,9 +180,10 @@ All four measured in its reactor source.
 
 This fork delegates every message to the upstream reactor first. For a list of
 addresses nobody asked for, that reactor returns `ErrUnsolicitedList`, no address
-reaches the book, and the sender is stopped and banned for 24 hours before the
-call returns. Verifying that payload afterwards would have let an unsolicited
-peer get addresses of its choosing dialled and promoted, which is exactly the
+reaches the book, and the sender is stopped and banned before the call returns.
+The ban carries a 24-hour expiry that never fires on a seed, see 5.3.
+Verifying that payload afterwards would have let an unsolicited peer get
+addresses of its choosing dialled and promoted, which is exactly the
 control that was just applied. The batch is dropped instead.
 
 The signal is the sender being stopped, not the book. `MarkBad` only records an
@@ -196,14 +200,16 @@ Verification used to be stateless, and that cost twice.
 
 A dead address in the served selection was re-dialled at every sweep, with no
 spacing at all, for as long as the upstream crawler took to evict it. That
-eviction is real and bounded: `dialPeer` gives up after `maxAttemptsToDial`, 16
-attempts spread over roughly 35 hours, then bans the address for 24 hours, which
-is what section 5.3 measures as the book falling from 1263 entries to 20 between
-24 and 55 hours. Bounded is not free: on a full book, a selection of 250
+eviction is real and, on a seed, final: `dialPeer` gives up once an address has
+failed more than `maxAttemptsToDial` times, that is on the eighteenth call after
+seventeen recorded failures, spread over roughly 35 hours, then bans it. That is
+what section 5.3 measures as the book falling from 1263 entries to 20 between 24
+and 55 hours. The ban carries a 24-hour expiry, but nothing on a seed ever
+constates it, see 5.3, so the address is gone until the process restarts.
+Bounded in count is not free in traffic: on a full book, a selection of 250
 addresses of which most are unreachable meant on the order of a thousand futile
-connections an hour, each paying a connect timeout, for the whole of that window,
-and again after every ban expiry that put the address back in circulation. The
-sweep never removed anything itself; it only added traffic.
+connections an hour, each paying a connect timeout, for the whole of that
+window. The sweep never removed anything itself; it only added traffic.
 
 An address just verified could also be dialled again straight away as soon as
 another peer mentioned it, for a second full handshake that taught nothing. A
@@ -226,13 +232,15 @@ the same way, since `AddAddress` refuses to change the address of an identity it
 already holds as old.
 
 **On failure**, the next attempt is spaced by 2^n seconds, capped at 4 hours.
-The formula is the upstream one, `pex_reactor.go` line 544, deliberately: both
+The formula is the upstream one used in `dialPeer`, deliberately: both
 accountings then live on the same scale and remain comparable. It is not
 expressed in multiples of `peer_check_period`, which would have coupled two
 unrelated effects, since shortening the period to refresh the book faster would
-also have hardened the punishment of failures. The cap sits below the 24-hour
-upstream ban so that this reactor is never the slower of the two clocks and no
-third timescale appears. There is no permanent give-up: the crawler alone bans,
+also have hardened the punishment of failures. The cap keeps this reactor on the
+timescale of the upstream crawl rather than adding a third one, so the two
+accountings stay comparable. It was once justified as sitting below an upstream
+ban that would expire; that justification does not hold, see 5.3. There is no
+permanent give-up: the crawler alone bans,
 and an address it has evicted is no longer in the book, so no selection can
 return it anyway.
 
@@ -389,11 +397,22 @@ measure a whole cycle rather than its first hours. First chain then second:
 
 The climb is reproducible: two independent cycles started from an empty book
 reached the same totals. So is the fall that follows, and it is not a regression
-of this fork. It is upstream eviction: `ensurePeers` calls `dialPeer`, which
-after `maxAttemptsToDial` (16) failed attempts calls `MarkBad(addr, 24h)`, which
-removes the address. Sixteen attempts take about 35 hours, and the drop happens
-between 24 and 55 hours. `MarkAttempt` deletes nothing on its own; its counter
-only feeds `isBad()`, read by `expireNew` when a *new* bucket is full.
+of this fork. It is upstream eviction. On a seed the crawl routine calls
+`dialPeer`, which once an address has failed more than `maxAttemptsToDial`
+times, that is on the eighteenth call after seventeen recorded failures, calls
+`MarkBad` and removes the address. Those attempts take about 35 hours, and the
+drop happens between 24 and 55 hours. `MarkAttempt` deletes nothing on its own;
+its counter only feeds `isBad()`, read by `expireNew` when a *new* bucket is
+full.
+
+**That ban never expires on a seed.** `MarkBad` records a 24-hour expiry, but
+the only production call that reinstates a banned address sits inside
+`ensurePeers`, which belongs to the routine a node runs when it is *not* a seed.
+A seed starts the crawl routine instead, so nothing ever reinstates anything: a
+banned address is gone until the process restarts. It is not persisted either,
+so a restart clears the ban list rather than restoring it. This is inherited
+upstream behaviour and it is left as it is, since diverging from upstream
+without a measured reason is not what this fork does.
 
 What survives is almost entirely verified: 10 of 10 and 14 of 15 in the *old*
 bucket after eight days. Verified addresses fall too, because an address promoted
@@ -427,37 +446,189 @@ bootstrapping a new node. It is not a ranking.
 
 ---
 
-## 6. Compatibility contract
+## 6. The second stack: TM2
+
+Everything in this section was read in the gno source at the commit this fork
+pins, `2ed70a2`, and in this fork's own source. **No runtime figure for TM2
+exists yet.** Section 5 measures the Cosmos stack only, and none of its numbers
+transposes: they are anchored on CometBFT buckets, on `MarkGood`, and on chains
+this stack does not serve. Until TM2 measurements exist, what follows is a
+description of code and of the reasons behind it, not of results.
+
+### 6.1 One binary, one stack per process
+
+The stack is declared in `config.toml`. Absent, it is Cosmos, which is what every
+version up to v2.2.2 did. This is the mechanism already used for everything that
+depends on the chain rather than on the binary.
+
+It can also be declared on the command line, and that is not a convenience.
+The identity of a seed is created by the same first command that creates the
+configuration file, and the identity format belongs to the stack, so an
+operator with no file yet would otherwise have no way to say which one they
+serve: they would be handed a Cosmos identity and would have to delete it. The
+flag settles the stack before anything is written. A file that already exists
+is never rewritten, so this affects a first run and nothing else.
+
+An unrecognised **value** is refused at start, where an unrecognised **key** is
+only reported. The asymmetry is deliberate: a misspelled key costs one setting,
+while a misspelled stack would start the network code of the wrong chain and fail
+far from its cause, in the handshake, against addresses that will never answer.
+
+### 6.2 What the TM2 core does with peer addresses
+
+The discovery reactor picks a random connected peer every three seconds and asks
+it for peers. Answers are added to a **persistent store** and handed to the
+switch for dialling. A freshly dialled outbound peer is asked immediately rather
+than waiting for the tick.
+
+The store keeps up to 1000 addresses on disk, keyed by the full `ID@host:port`
+string, each with the moment it was last seen. It is written atomically, reloaded
+at start, drops the oldest entries when full, never stores the node's own
+address, and treats a corrupt file as empty after copying it aside.
+
+**But the store is never consulted when answering.** A discovery request is
+served from `Switch.Peers().List()`, that is from the connections open at that
+instant. Private peers and peers whose advertised dial address does not validate
+are removed, the rest is shuffled, and at most **30** are returned. A node
+holding a thousand stored addresses still answers with at most thirty of the ones
+it happens to be talking to.
+
+Routability is deliberately not applied to what is shared. The upstream comment
+gives the reason: a `Routable()` constraint would filter the loopback addresses
+that local and test deployments advertise.
+
+Nothing in that path ever closes a connection.
+
+### 6.3 The three gaps that matter for a seed
+
+1. **A seed answers from its connections, not from what it knows.** The one node
+   on the network whose entire purpose is to hold addresses is the one that
+   cannot serve them.
+2. **Nothing is ever verified.** The stored `last seen` records when an address
+   was last *mentioned* by someone, not when it was last *reached*. An address
+   that has never answered and one that answered a second ago are stored alike.
+   This is the same gap as section 2.2 on the Cosmos side, reached by a different
+   route: there, qualification exists and is never called; here, it does not
+   exist.
+3. **Nothing hangs up.** A seed that never closes an idle connection fills its
+   own inbound slots with peers it has already served, and stops being reachable
+   for the next new node. On the Cosmos side the equivalent is section 2.3, where
+   the value exists and is left at zero.
+
+### 6.4 What this fork adds on TM2
+
+- **A book that is served.** Up to 250 verified addresses, the selection size the
+  Cosmos side of this same binary already serves, against the core's 30 drawn
+  from connections.
+- **Verification state on top of the core's own file.** The same JSON shape and
+  the same 1000-address ceiling, plus three optional fields: consecutive
+  failures, last attempt, last success. Anything that does not know them ignores
+  them, so one file holds one state and either side can read it. No buckets, no
+  promotion, no new-versus-old bias: the primitives the Cosmos policy is built
+  on do not exist here, so the policy is transposed and not the mechanism.
+- **A hang-up after answering**, on `seed_disconnect_wait_period`, the key the
+  Cosmos side already uses for the same decision. A peer that asks repeatedly
+  gets no longer a stay than one that asks once.
+- **A hang-up when there is nothing to serve.** An empty book is the state where
+  an unanswered peer costs the most, since it holds the slot the next one needs.
+- **`addr_book_strict` honoured**, on the way in as well as on the way out, so an
+  unroutable address is not stored, not dialled, and does not return after a
+  restart. A public seed that kept the core's behaviour would hand out addresses
+  nobody can dial.
+- **A sweep on `peer_check_period`.** Stale addresses are handed to the switch
+  rather than dialled directly, so one dialler keeps holding the outbound limit
+  and the duplicate-IP rule. Five consecutive failures evict an address. A
+  success is trusted for three periods, so a sweep may miss once without
+  emptying what the seed can answer.
+- **Counters**, on the shape of the Cosmos ones: one series for the decisions, by
+  outcome and by the stage that took them, one for the size of the book and of
+  its servable part, every reachable pair published at zero so a share can be
+  read from the first scrape. Nothing upstream reports any of this.
+
+### 6.5 Two constraints found in the core, not chosen
+
+**The announced channels come only from the registered reactors.** A connection's
+channel descriptors are assembled from what the reactors declare, so announcing a
+channel no reactor serves makes the peer send on it and the connection stop on
+the first unknown channel. The seed therefore announces the discovery channel and
+nothing else. This is a constraint, not a design preference.
+
+**The switch has one exported way to drop a peer, and reports every use of it as
+a failure.** On a seed the main path is not a failure, and a journal whose normal
+traffic looks like failure stops being read. The line is filtered down to
+informational, keyed on the error value rather than on its wording, so a reworded
+message upstream cannot silently disable the filter.
+
+### 6.6 Identity and handshake
+
+The two stacks share no identity format. The node ID, the key file and the
+address string all differ, so **a `seeds` list written for one stack is not
+transposable to the other**, and a home directory belongs to one stack.
+
+One value in the handshake belongs to the chain rather than to the binary: the
+`app` entry of the announced version set. It has no equivalent on the Cosmos side
+of this binary, where the comparable value is fixed by the stack. It is exposed
+as `app_version`, empty by default, and a chain that announces a non-empty
+application version needs it set to match.
+
+### 6.7 What is not measured
+
+Named here so that nobody reads section 5 as covering both stacks:
+
+- what the public TM2 seeds actually return to a fresh node;
+- the real cost per peer held;
+- how fast a TM2 seed's inbound slots fill when nothing hangs up, which is the
+  measurement that would say whether the hang-up is a comfort or a necessity;
+- the effect of the merged dependency set on binary size and on the Cosmos
+  behaviour, which must be measured again now that the TM2 code actually imports
+  the gno p2p package.
+
+---
+
+## 7. Compatibility contract
 
 This fork is a drop-in replacement. The following is preserved deliberately,
 because a public Ansible role deploys Tenderseed in production and would break
 otherwise:
 
 1. the binary is named `tenderseed`;
-2. top-level flags `-home`, `-config`, `-chain-id`, `-seeds`;
+2. top-level flags `-home`, `-config`, `-chain-id`, `-seeds`, with `-stack`
+   added;
 3. subcommands `start` and `show-node-id`, with `version` added;
 4. the home layout: `config/config.toml`, `config/node_key.json`, and the book at
-   `data/addrbook.json`;
+   `data/addrbook.json`. **The layout is preserved, the file contents are not.**
+   A home belongs to one stack: the node key and the address book have no format
+   in common between Cosmos and TM2, and a `seeds` list written for one stack is
+   not transposable to the other;
 5. **a partial `config.toml` is still accepted.** Decoding starts from the
    defaults, so any key left out keeps its default value;
-6. the `TENDERSEED_CHAIN_ID` and `TENDERSEED_SEEDS` environment variables, with
-   flags taking priority.
+6. **an unrecognised key is reported, never refused.** A configuration written
+   for a later version still starts on an earlier binary, minus the settings that
+   binary does not know;
+7. the `TENDERSEED_CHAIN_ID` and `TENDERSEED_SEEDS` environment variables, with
+   flags taking priority;
+8. **a `config.toml` written for a v1 or a v2 keeps working when only the binary
+   is replaced.** One exception, introduced in v3.0.0 and named in its release
+   notes: a configuration that enables the metrics endpoint while leaving the
+   namespace empty used to start and now refuses to.
 
 ---
 
-## 7. What this fork does not do
+## 8. What this fork does not do
 
 Decided and assumed:
 
 - **no multiple chains inside one process.** One process serves one chain, which
   is what Tenderseed, cometseed and cosmoseed all do. Several homes on several
   ports serve several chains;
+- **no two stacks inside one process.** A process serves Cosmos or TM2,
+  declared in its configuration. The two stacks share a binary, not a run;
 - **no chain discovery through a registry**;
 - **no front end, no dashboard, no HTTP peer-list endpoint.**
 
 ---
 
-## 8. Other changes
+## 9. Other changes
 
 - **Every panic is gone.** Errors are printed to standard error with a non-zero
   exit code, which a unit file or a script can act on. A `Restart=always` unit
