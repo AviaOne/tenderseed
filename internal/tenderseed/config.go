@@ -1,6 +1,7 @@
 package tenderseed
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -140,6 +141,13 @@ func (config Config) CheckWorkers() (int, error) {
 // Validate rejects values that CometBFT accepts without complaint and then
 // acts on. A negative peer limit or a payload size of zero is never intended,
 // and the failure it produces is far from the value that caused it.
+// errEmptyMetricsNamespace is returned when the endpoint is asked for without
+// a name to publish under. It belongs to both stacks: one configuration key
+// means the same thing on each, refusal included.
+var errEmptyMetricsNamespace = errors.New(
+	"metrics_namespace is empty while metrics_listen_addr is set",
+)
+
 func (config Config) Validate() error {
 	if _, err := config.SeedStack(); err != nil {
 		return err

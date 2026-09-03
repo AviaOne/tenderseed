@@ -327,6 +327,13 @@ func (r *SeedReactorTM2) serve(peer p2p.PeerConn) error {
 	// An empty answer is not sendable: the receiving side rejects a response
 	// carrying no peer. Saying nothing is the right behaviour of a seed that
 	// has learned nothing yet, and the peer will ask again.
+	//
+	// The hang up is scheduled all the same. A peer we cannot answer holds an
+	// inbound slot for as long as one we answered, and holding it serves
+	// nobody: not the peer, which learns nothing by staying, and not the next
+	// one, which finds the slot taken. Keeping it would be the core behaviour
+	// this reactor exists to correct, reappearing on the one seed state where
+	// it costs the most, the empty book of a seed that has just started.
 	if len(addrs) == 0 {
 		r.metrics.observe(resultEmpty, stageServe)
 		r.logger.Warn("no verified address to serve",
@@ -334,6 +341,9 @@ func (r *SeedReactorTM2) serve(peer p2p.PeerConn) error {
 			"book", r.book.Size(),
 			"verified", r.book.VerifiedSize(),
 		)
+
+		r.scheduleDisconnect(peer)
+
 		return nil
 	}
 

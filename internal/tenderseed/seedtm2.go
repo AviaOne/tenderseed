@@ -236,7 +236,18 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 
 	var metrics *seedTM2Metrics
 
+	// The counters share the fate of the endpoint, as they do on the Cosmos
+	// side: no listener, no series. The transport is listening from Listen
+	// above, so every failing path past it releases the socket.
+	//
+	// The namespace is checked before the series are built rather than after,
+	// so a refused configuration never registers anything first.
 	if s.Config.MetricsListenAddress != "" {
+		if s.Config.MetricsNamespace == "" {
+			s.closeTransport()
+			return nil, errEmptyMetricsNamespace
+		}
+
 		metrics, err = newSeedTM2Metrics(s.Config.MetricsNamespace)
 		if err != nil {
 			s.closeTransport()
@@ -256,14 +267,6 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 	seedAddrs, errs := p2ptypes.NewNetAddressFromStrings(splitAndTrimList(s.Config.Seeds))
 	for _, seedErr := range errs {
 		s.Logger.Error("invalid seed address", "err", seedErr)
-	}
-
-	// The counters share the fate of the endpoint, as they do on the Cosmos
-	// side: no listener, no series. The transport is listening from Listen
-	// above, so every failing path past it releases the socket.
-	if s.Config.MetricsListenAddress != "" && s.Config.MetricsNamespace == "" {
-		s.closeTransport()
-		return nil, errors.New("metrics_namespace is empty while metrics_listen_addr is set")
 	}
 
 	s.Switch = p2p.NewMultiplexSwitch(

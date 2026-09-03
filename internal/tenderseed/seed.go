@@ -43,7 +43,7 @@ type Seed struct {
 
 // Version is the software version announced to peers during the handshake.
 // Override it at build time with -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=<value>".
-var Version = "2.2.2"
+var Version = "3.0.0"
 
 // NewSeed builds every component of a seed node and wires them together.
 // It listens on the configured address but does not start the switch.
@@ -195,6 +195,11 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 	// the question of why the others bother.
 	var seedMetrics *verifyMetrics
 	if s.Config.MetricsListenAddress != "" {
+		if s.Config.MetricsNamespace == "" {
+			s.closeTransport()
+			return nil, errEmptyMetricsNamespace
+		}
+
 		seedMetrics, err = newVerifyMetrics(s.Config.MetricsNamespace)
 		if err != nil {
 			s.closeTransport()

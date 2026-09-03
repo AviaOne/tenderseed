@@ -135,24 +135,6 @@ func (b *SeedBook) MarkSuccess(addr *p2ptypes.NetAddress) {
 	b.generation++
 }
 
-// MarkFailure records one more consecutive failure on this address.
-func (b *SeedBook) MarkFailure(addr *p2ptypes.NetAddress) {
-	if addr == nil {
-		return
-	}
-
-	b.mtx.Lock()
-	defer b.mtx.Unlock()
-
-	now := time.Now()
-	record := b.record(addr, now)
-	record.lastTry = now
-	record.fails++
-
-	b.dirty = true
-	b.generation++
-}
-
 // record returns the entry for an address, creating it if needed.
 // The caller holds the lock.
 func (b *SeedBook) record(addr *p2ptypes.NetAddress, now time.Time) *bookRecord {
@@ -385,7 +367,8 @@ func (b *SeedBook) evict() {
 }
 
 // load reads the book from disk. A missing file is not an error. A corrupt
-// file is set aside and treated as empty, rather than stopping the seed.
+// file is copied beside itself and treated as empty, rather than stopping the
+// seed. The original is left where it is, and the first save overwrites it.
 func (b *SeedBook) load() error {
 	if _, err := os.Stat(b.filePath); os.IsNotExist(err) {
 		return nil
@@ -401,14 +384,14 @@ func (b *SeedBook) load() error {
 	var raw bookFile
 
 	if err := json.Unmarshal(data, &raw); err != nil {
-		aside := b.filePath + ".corrupt"
+		copyPath := b.filePath + ".corrupt"
 
-		if copyErr := os.WriteFile(aside, data, 0o644); copyErr != nil {
-			b.logger.Warn("corrupt address book, backup failed",
+		if copyErr := os.WriteFile(copyPath, data, 0o644); copyErr != nil {
+			b.logger.Warn("corrupt address book, copy failed",
 				"file", b.filePath, "err", err, "copy_err", copyErr)
 		} else {
-			b.logger.Warn("corrupt address book, moved aside",
-				"file", b.filePath, "backup", aside, "err", err)
+			b.logger.Warn("corrupt address book, copy kept",
+				"file", b.filePath, "copy", copyPath, "err", err)
 		}
 
 		return nil
