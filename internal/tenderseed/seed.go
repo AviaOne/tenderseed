@@ -11,6 +11,7 @@ import (
 
 	"github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/libs/log"
+	cmtos "github.com/cometbft/cometbft/libs/os"
 	cmtstrings "github.com/cometbft/cometbft/libs/strings"
 	"github.com/cometbft/cometbft/p2p"
 	"github.com/cometbft/cometbft/p2p/pex"
@@ -248,6 +249,24 @@ func (s *Seed) Start() error {
 		return err
 	}
 	return nil
+}
+
+// TrapSignal installs the shutdown handler of the Cosmos stack.
+//
+// It belongs here rather than in the caller because it logs, and the logger is
+// the one type the two stacks do not share.
+//
+// Trap after Start, not before. A signal arriving while Switch.Start runs
+// would find IsRunning false and close the transport under a switch that is
+// still starting. Before that point there is nothing to save and nothing to
+// stop, so the default disposition is the correct one.
+func (s *Seed) TrapSignal() {
+	cmtos.TrapSignal(s.FilteredLogger, func() {
+		s.FilteredLogger.Info("shutting down...")
+		if err := s.Stop(); err != nil {
+			s.FilteredLogger.Error("error while shutting down", "err", err)
+		}
+	})
 }
 
 // Wait blocks until the switch stops.

@@ -37,12 +37,27 @@ const DefaultPeerCheckPeriod = 10 * time.Minute
 // DefaultPeerCheckWorkers is how many verification dials run in parallel.
 const DefaultPeerCheckWorkers = 8
 
+// The p2p stacks a single tenderseed binary can serve. StackCosmos is
+// CometBFT, StackTM2 is the stack of gno.land.
+//
+// The stack is declared in config.toml like everything else that depends on
+// the chain served. Nothing in chain_id names it: it is a free string on both
+// sides, so it cannot be derived. An absent key means StackCosmos, which is
+// the behaviour of every version up to v2.2.2, so a config file written for a
+// v1 or a v2 keeps working against a v3 binary without being touched.
+const (
+	StackCosmos = "cosmos"
+	StackTM2    = "tm2"
+)
+
 // Config is a tenderseed configuration
 //
 //nolint:lll
 type Config struct {
 	ListenAddress            string `toml:"laddr" comment:"Address to listen for incoming connections"`
 	ChainID                  string `toml:"chain_id" comment:"network identifier of the chain this seed serves"`
+	Stack                    string `toml:"stack" comment:"p2p stack of the chain this seed serves (\"cosmos\" or \"tm2\"); empty means cosmos"`
+	AppVersion               string `toml:"app_version" comment:"tm2 only: value announced for the \"app\" entry of the version set; it belongs to the chain, not to this binary. Empty matches a chain whose app version is not semver, which is what gno.land announces today"`
 	LogLevel                 string `toml:"log_level" comment:"logging level to filter output (\"debug\", \"info\", \"warn\", \"error\" or \"none\")"`
 	NodeKeyFile              string `toml:"node_key_file" comment:"path to node_key (relative to the seed home directory (-home) or an absolute path)"`
 	AddrBookFile             string `toml:"addr_book_file" comment:"path to address book (relative to the seed home directory (-home) or an absolute path)"`
@@ -58,6 +73,25 @@ type Config struct {
 	MetricsListenAddress     string `toml:"metrics_listen_addr" comment:"address to serve Prometheus metrics on; empty disables them"`
 	Moniker                  string `toml:"moniker" comment:"name announced to peers; empty means <chain_id>-seed"`
 	MetricsNamespace         string `toml:"metrics_namespace" comment:"prefix of every exported metric series"`
+}
+
+// SeedStack returns the stack this seed serves. An empty value yields
+// StackCosmos, so a file written before this key existed keeps its behaviour.
+//
+// An unrecognised value is refused, where an unrecognised key is only
+// reported. The two are not the same mistake: an unknown key may belong to a
+// newer binary and ignoring it costs one setting, while a misspelled stack
+// would silently start the network code of the wrong chain and the failure
+// would surface far from its cause.
+func (config Config) SeedStack() (string, error) {
+	switch config.Stack {
+	case "", StackCosmos:
+		return StackCosmos, nil
+	case StackTM2:
+		return StackTM2, nil
+	}
+	return "", fmt.Errorf("stack: unknown value %q, want %q or %q",
+		config.Stack, StackCosmos, StackTM2)
 }
 
 // DisconnectWaitPeriod returns SeedDisconnectWaitPeriod as a duration.
@@ -107,6 +141,9 @@ func (config Config) CheckWorkers() (int, error) {
 // acts on. A negative peer limit or a payload size of zero is never intended,
 // and the failure it produces is far from the value that caused it.
 func (config Config) Validate() error {
+	if _, err := config.SeedStack(); err != nil {
+		return err
+	}
 	if config.MaxNumInboundPeers < 0 {
 		return fmt.Errorf("max_num_inbound_peers: must not be negative, got %d", config.MaxNumInboundPeers)
 	}
@@ -211,6 +248,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		ListenAddress:            "tcp://0.0.0.0:26656",
 		ChainID:                  "",
+		Stack:                    StackCosmos,
+		AppVersion:               "",
 		LogLevel:                 "info",
 		NodeKeyFile:              "config/node_key.json",
 		AddrBookFile:             "data/addrbook.json",

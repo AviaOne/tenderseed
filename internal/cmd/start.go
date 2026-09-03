@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cometbft/cometbft/libs/log"
-	cmtos "github.com/cometbft/cometbft/libs/os"
 	"github.com/google/subcommands"
 
 	"github.com/AviaOne/tenderseed/internal/tenderseed"
@@ -37,34 +35,24 @@ start the tenderseed
 func (args *StartArgs) SetFlags(flagSet *flag.FlagSet) {
 }
 
-// Execute runs the command
+// Execute runs the command.
+//
+// This file names no stack. NewNode reads the configured one and hands back a
+// Node; the logger, the transport and the signal handler all live behind that
+// interface, because they are the parts the two stacks do not share.
 func (args *StartArgs) Execute(_ context.Context, flagSet *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
-	logger := log.NewTMLogger(
-		log.NewSyncWriter(os.Stdout),
-	)
-
-	seed, err := tenderseed.NewSeed(args.HomeDir, args.SeedConfig, logger)
+	node, err := tenderseed.NewNode(args.HomeDir, args.SeedConfig, os.Stdout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tenderseed:", err)
 		return subcommands.ExitFailure
 	}
 
-	if err := seed.Start(); err != nil {
+	if err := node.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, "tenderseed:", err)
 		return subcommands.ExitFailure
 	}
 
-	// Trapped after Start, not before. A signal arriving while Switch.Start
-	// runs would find IsRunning false and close the transport under a switch
-	// that is still starting. Before this line there is nothing to save and
-	// nothing to stop, so the default disposition is the correct one.
-	cmtos.TrapSignal(seed.FilteredLogger, func() {
-		seed.FilteredLogger.Info("shutting down...")
-		if err := seed.Stop(); err != nil {
-			seed.FilteredLogger.Error("error while shutting down", "err", err)
-		}
-	})
-
-	seed.Wait()
+	node.TrapSignal()
+	node.Wait()
 	return subcommands.ExitSuccess
 }

@@ -211,3 +211,92 @@ not_a_key = 3
 		t.Errorf("a missing file reports %v, want nothing", got)
 	}
 }
+
+func TestSeedStack(t *testing.T) {
+	cases := []struct {
+		value   string
+		want    string
+		wantErr bool
+	}{
+		{value: "", want: StackCosmos},
+		{value: StackCosmos, want: StackCosmos},
+		{value: StackTM2, want: StackTM2},
+		{value: "TM2", wantErr: true},
+		{value: "tendermint2", wantErr: true},
+		{value: "gno", wantErr: true},
+	}
+	for _, c := range cases {
+		got, err := Config{Stack: c.value}.SeedStack()
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%q: expected an error, got %q", c.value, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%q: unexpected error %v", c.value, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%q: got %q, want %q", c.value, got, c.want)
+		}
+	}
+}
+
+// A config file written before the key existed must keep serving Cosmos, which
+// is what makes a binary-only upgrade from v1 or v2 possible.
+func TestStackIsAbsentFromAnOlderFile(t *testing.T) {
+	config, err := LoadConfigFromFile(writeConfig(t, partialConfig))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	stack, err := config.SeedStack()
+	if err != nil {
+		t.Fatalf("SeedStack: %v", err)
+	}
+	if stack != StackCosmos {
+		t.Errorf("stack = %q, want %q", stack, StackCosmos)
+	}
+	if len(UnknownKeys(writeConfig(t, "stack = \"tm2\"\n"))) != 0 {
+		t.Error("stack must be a known key")
+	}
+}
+
+func TestValidateRejectsAnUnknownStack(t *testing.T) {
+	config := DefaultConfig()
+	config.Stack = "tendermint2"
+	if err := config.Validate(); err == nil {
+		t.Fatal("expected an error, got none")
+	}
+}
+
+func TestDefaultStackIsCosmos(t *testing.T) {
+	stack, err := DefaultConfig().SeedStack()
+	if err != nil {
+		t.Fatalf("SeedStack: %v", err)
+	}
+	if stack != StackCosmos {
+		t.Errorf("stack = %q, want %q", stack, StackCosmos)
+	}
+}
+
+// app_version belongs to the chain, not to the binary, so it is a key and not
+// a constant. Absent, it stays empty, which is what a chain announcing a non
+// semver app version needs.
+func TestAppVersionIsAKeyAndDefaultsToEmpty(t *testing.T) {
+	if got := DefaultConfig().AppVersion; got != "" {
+		t.Errorf("AppVersion = %q, want empty", got)
+	}
+
+	config, err := LoadConfigFromFile(writeConfig(t, "app_version = \"v1.2.3\"\n"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if config.AppVersion != "v1.2.3" {
+		t.Errorf("AppVersion = %q, want v1.2.3", config.AppVersion)
+	}
+
+	if got := UnknownKeys(writeConfig(t, "app_version = \"dev\"\n")); len(got) != 0 {
+		t.Errorf("app_version must be a known key, got %v", got)
+	}
+}
