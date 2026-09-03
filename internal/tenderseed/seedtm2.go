@@ -132,7 +132,7 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 
 	nodeKey, err := p2ptypes.LoadOrMakeNodeKey(nodeKeyFilePath)
 	if err != nil {
-		return nil, err
+		return nil, nodeKeyError(nodeKeyFilePath, StackTM2, err)
 	}
 	s.NodeKey = nodeKey
 

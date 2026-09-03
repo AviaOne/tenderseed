@@ -114,7 +114,7 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 
 	nodeKey, err := p2p.LoadOrGenNodeKey(nodeKeyFilePath)
 	if err != nil {
-		return nil, err
+		return nil, nodeKeyError(nodeKeyFilePath, StackCosmos, err)
 	}
 	s.NodeKey = nodeKey
 

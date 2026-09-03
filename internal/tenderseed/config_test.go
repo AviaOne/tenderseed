@@ -389,3 +389,29 @@ func TestGeneratedConfigDefaultsToCosmos(t *testing.T) {
 		t.Errorf("Stack = %q, want %q", config.Stack, StackCosmos)
 	}
 }
+
+// A home directory belongs to one stack. Reading one with the other must say
+// so, since the decoder underneath names neither the file nor the cause.
+func TestNodeKeyErrorNamesTheFileAndTheStack(t *testing.T) {
+	home := t.TempDir()
+
+	if _, err := NodeID(home, Config{
+		NodeKeyFile: "config/node_key.json",
+		Stack:       StackCosmos,
+	}); err != nil {
+		t.Fatalf("generating a cosmos key: %v", err)
+	}
+
+	_, err := NodeID(home, Config{
+		NodeKeyFile: "config/node_key.json",
+		Stack:       StackTM2,
+	})
+	if err == nil {
+		t.Fatal("reading a cosmos key as tm2 must fail")
+	}
+	for _, want := range []string{"node_key.json", StackTM2, "one stack"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}

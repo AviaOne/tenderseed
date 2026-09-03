@@ -93,16 +93,31 @@ func NodeID(homeDir string, seedConfig Config) (string, error) {
 	case StackCosmos:
 		nodeKey, err := p2p.LoadOrGenNodeKey(nodeKeyFilePath)
 		if err != nil {
-			return "", err
+			return "", nodeKeyError(nodeKeyFilePath, StackCosmos, err)
 		}
 		return string(nodeKey.ID()), nil
 	case StackTM2:
 		nodeKey, err := p2ptypes.LoadOrMakeNodeKey(nodeKeyFilePath)
 		if err != nil {
-			return "", err
+			return "", nodeKeyError(nodeKeyFilePath, StackTM2, err)
 		}
 		return nodeKey.ID().String(), nil
 	}
 
 	return "", fmt.Errorf("stack: unhandled value %q", stack)
+}
+
+// nodeKeyError explains why a node key file could not be read.
+//
+// The two stacks store a node key in two formats that neither can read as the
+// other's, and the decoder that fails says only that some JSON did not fit
+// some Go type: it names no file on the TM2 side and neither the file nor the
+// cause on the Cosmos side. An operator meeting this has almost always
+// pointed a stack at a home directory belonging to the other one, which is
+// the one thing the raw error never says.
+func nodeKeyError(path, stack string, err error) error {
+	return fmt.Errorf("node key %s cannot be read as a %s key. A home "+
+		"directory belongs to one stack: use one built for %s, or point "+
+		"-home at another directory. Underlying error: %w",
+		path, stack, stack, err)
 }
