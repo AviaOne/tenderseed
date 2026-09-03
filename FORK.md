@@ -448,12 +448,13 @@ bootstrapping a new node. It is not a ranking.
 
 ## 6. The second stack: TM2
 
-Everything in this section was read in the gno source at the commit this fork
-pins, `2ed70a2`, and in this fork's own source. **No runtime figure for TM2
-exists yet.** Section 5 measures the Cosmos stack only, and none of its numbers
-transposes: they are anchored on CometBFT buckets, on `MarkGood`, and on chains
-this stack does not serve. Until TM2 measurements exist, what follows is a
-description of code and of the reasons behind it, not of results.
+The code in this section was read in the gno source at the commit this fork
+pins, `2ed70a2`, and in this fork's own source. The figures come from
+measurements run on pearl, the gno.land test network, and are gathered in 6.7.
+
+**Section 5 measures the Cosmos stack only and none of its numbers transposes
+here**: they are anchored on CometBFT buckets, on `MarkGood`, and on chains this
+stack does not serve.
 
 ### 6.1 One binary, one stack per process
 
@@ -507,6 +508,7 @@ Nothing in that path ever closes a connection.
 2. **Nothing is ever verified.** The stored `last seen` records when an address
    was last *mentioned* by someone, not when it was last *reached*. An address
    that has never answered and one that answered a second ago are stored alike.
+   Measured, that gap is 28 per cent of the network: see 6.7.
    This is the same gap as section 2.2 on the Cosmos side, reached by a different
    route: there, qualification exists and is never called; here, it does not
    exist.
@@ -571,17 +573,44 @@ of this binary, where the comparable value is fixed by the stack. It is exposed
 as `app_version`, empty by default, and a chain that announces a non-empty
 application version needs it set to match.
 
-### 6.7 What is not measured
+### 6.7 The measured baseline
 
-Named here so that nobody reads section 5 as covering both stacks:
+Measured on pearl, the gno.land test network, in September 2026. These are the
+figures a TM2 change is compared against; **none of the Cosmos numbers in
+section 5 transposes to them.**
 
-- what the public TM2 seeds actually return to a fresh node;
-- the real cost per peer held;
-- how fast a TM2 seed's inbound slots fill when nothing hangs up, which is the
-  measurement that would say whether the hang-up is a comfort or a necessity;
-- the effect of the merged dependency set on binary size and on the Cosmos
-  behaviour, which must be measured again now that the TM2 code actually imports
-  the gno p2p package.
+**What a fresh node collects from the two public pearl seeds and nothing else.**
+67 addresses, reached at fifteen seconds and unchanged for the following three
+minutes, of which 65 are routable and 2 are loopback. Of those 67, four
+connections held. Reproduced three times, twice under a different identity, with
+the same four peers holding every time. It is a plateau, not a progression.
+
+**28 per cent of what the network announces is reachable by nobody.** A fresh
+seed left for 120 seconds from the same two seeds finished with 65 addresses of
+which 47 answered. A seed that repeats what it was told hands out that 28 per
+cent as if it were peers, and every node starting from it spends outbound slots
+on them. This one figure is what the TM2 layer exists for.
+
+**Loopback addresses circulate on the public network.** The probe received and
+dialled two of them, and kept retrying them for three minutes. The core shares
+them on purpose, since it does not apply routability to what it answers.
+
+**A real node holds more than it can serve.** One pearl node holding 75 peers
+could offer 51 of them: 24 announce an unspecified address and are filtered out
+of every discovery answer. Those 51 are then capped at 30 per answer.
+
+**Holding a connection is the exception on this network.** Four out of 67, three
+times over. A design that composes, verifies and hangs up does not need to hold,
+which is the one thing this measurement settles in its favour.
+
+### 6.8 What is not measured
+
+Named here so that nothing above is read as covering it:
+
+- the memory cost of a TM2 seed holding many inbound connections at once;
+- how fast a TM2 seed's inbound slots fill when nothing hangs up;
+- compile duration, which the Go cache would falsify without a full clean;
+- running behaviour beyond startup, on either stack.
 
 ---
 
