@@ -64,7 +64,7 @@ type Config struct {
 	// possible; every following line of a comment receives one "#", so those
 	// lines are written one character short on purpose.
 
-	ChainID       string `toml:"chain_id" comment:"##############################################################\n##              WHAT YOU MAY NEED TO CHANGE               ###\n##                                                        ###\n##        after any change here, restart the seed:        ###\n##        systemctl restart tenderseed-<chain_id>         ###\n#############################################################\n network identifier of the chain this seed serves"`
+	ChainID       string `toml:"chain_id" comment:"##############################################################\n##              WHAT YOU MAY NEED TO CHANGE               ###\n##                                                        ###\n##  after any change here, restart the seed.              ###\n##  systemd:  sudo systemctl restart tenderseed-<chain_id>###\n##  docker:   docker restart tenderseed-<chain_id>        ###\n#############################################################\n network identifier of the chain this seed serves"`
 	Stack         string `toml:"stack" comment:"p2p stack of that chain, \"cosmos\" or \"tm2\"; empty means cosmos.\n It cannot be guessed from chain_id, and it decides the format of\n the node key and of the address book, so a home directory\n belongs to one stack"`
 	Seeds         string `toml:"seeds" comment:"seed nodes we can use to discover peers, in the identity format\n of the stack above. May be emptied once the address book is\n populated"`
 	ListenAddress string `toml:"laddr" comment:"Address to listen for incoming connections"`
@@ -307,4 +307,39 @@ func DefaultConfig() *Config {
 		MetricsListenAddress:     "",
 		MetricsNamespace:         DefaultMetricsNamespace,
 	}
+}
+
+// CheckStackFlag refuses a -stack value that contradicts an existing
+// configuration file.
+//
+// The other top level flags override the file and nothing on disk remembers
+// it. This one is different: the stack decides the format of the node key and
+// of the address book, so overriding it silently can leave a home whose
+// config.toml says one stack and whose key file belongs to the other, which
+// only surfaces at the next start. Measured: a home whose key file has been
+// removed, which is what an identity rotation does, took a TM2 key while its
+// file still said cosmos.
+//
+// So the flag settles the stack when the file is created, and afterwards it
+// may confirm what the file says but never contradict it. Changing the stack
+// of an established home is not a flag, it is a new home.
+func (config Config) CheckStackFlag(flag string) error {
+	if flag == "" {
+		return nil
+	}
+	wanted, err := (Config{Stack: flag}).SeedStack()
+	if err != nil {
+		return err
+	}
+	current, err := config.SeedStack()
+	if err != nil {
+		return err
+	}
+	if wanted != current {
+		return fmt.Errorf("-stack %s contradicts the configuration, which "+
+			"serves %s. A home directory belongs to one stack: edit stack in "+
+			"config.toml if that is what you mean, or point -home at another "+
+			"directory", wanted, current)
+	}
+	return nil
 }

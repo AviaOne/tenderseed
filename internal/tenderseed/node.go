@@ -107,17 +107,21 @@ func NodeID(homeDir string, seedConfig Config) (string, error) {
 	return "", fmt.Errorf("stack: unhandled value %q", stack)
 }
 
-// nodeKeyError explains why a node key file could not be read.
+// nodeKeyError says which file failed and for which stack, without naming a
+// cause it has not established.
 //
-// The two stacks store a node key in two formats that neither can read as the
-// other's, and the decoder that fails says only that some JSON did not fit
-// some Go type: it names no file on the TM2 side and neither the file nor the
-// cause on the Cosmos side. An operator meeting this has almost always
-// pointed a stack at a home directory belonging to the other one, which is
-// the one thing the raw error never says.
+// The decoder that fails says only that some JSON did not fit some Go type:
+// it names no file on the TM2 side and neither the file nor the cause on the
+// Cosmos side. The likeliest cause is a home directory built for the other
+// stack, since the two key formats are not interchangeable, but this wrapper
+// sees every failure including a permission denied and a truncated file, and
+// it cannot tell them apart. Announcing a stack mismatch on a permission
+// error would send an operator down the wrong path, which is exactly the
+// fault this fork keeps finding in its own documentation.
 func nodeKeyError(path, stack string, err error) error {
-	return fmt.Errorf("node key %s cannot be read as a %s key. A home "+
-		"directory belongs to one stack: use one built for %s, or point "+
-		"-home at another directory. Underlying error: %w",
-		path, stack, stack, err)
+	return fmt.Errorf("node key %s could not be read as a %s key. One common "+
+		"cause is a home directory built for the other stack, since a home "+
+		"belongs to one stack and the two key formats are not "+
+		"interchangeable. Underlying error: %w",
+		path, stack, err)
 }

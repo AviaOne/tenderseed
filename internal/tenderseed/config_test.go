@@ -415,3 +415,54 @@ func TestNodeKeyErrorNamesTheFileAndTheStack(t *testing.T) {
 		}
 	}
 }
+
+// The flag settles the stack when the file is created. Afterwards it may
+// confirm what the file says, never contradict it, because the key file and
+// the address book on disk follow the stack.
+func TestCheckStackFlagRefusesAContradiction(t *testing.T) {
+	cosmos := Config{Stack: StackCosmos}
+	older := Config{} // written before the key existed
+
+	if err := cosmos.CheckStackFlag(""); err != nil {
+		t.Errorf("no flag must be accepted: %v", err)
+	}
+	if err := cosmos.CheckStackFlag(StackCosmos); err != nil {
+		t.Errorf("a flag confirming the file must be accepted: %v", err)
+	}
+	if err := older.CheckStackFlag(StackCosmos); err != nil {
+		t.Errorf("an absent stack means cosmos: %v", err)
+	}
+	if err := cosmos.CheckStackFlag(StackTM2); err == nil {
+		t.Error("a flag contradicting the file must be refused")
+	}
+	if err := older.CheckStackFlag(StackTM2); err == nil {
+		t.Error("a flag contradicting an absent stack must be refused")
+	}
+	if err := cosmos.CheckStackFlag("bogus"); err == nil {
+		t.Error("an unknown value must be refused")
+	}
+}
+
+// A key file can fail to be read for reasons that have nothing to do with the
+// stack. The message must not name a cause it has not established.
+func TestNodeKeyErrorDoesNotAssertACause(t *testing.T) {
+	home := t.TempDir()
+	// A directory where a file is expected fails for a reason of its own.
+	if err := os.MkdirAll(filepath.Join(home, "config", "node_key.json"), 0o750); err != nil {
+		t.Fatalf("preparing the case: %v", err)
+	}
+
+	_, err := NodeID(home, Config{
+		NodeKeyFile: "config/node_key.json",
+		Stack:       StackTM2,
+	})
+	if err == nil {
+		t.Fatal("reading a directory as a key must fail")
+	}
+	if !strings.Contains(err.Error(), "node_key.json") {
+		t.Errorf("error %q does not name the file", err)
+	}
+	if !strings.Contains(err.Error(), "common cause") {
+		t.Errorf("error %q states a cause it has not established", err)
+	}
+}

@@ -85,12 +85,12 @@ func main() {
 			seedConfig.Seeds = envSeeds
 		}
 
-		// Same precedence as the two above, the flag winning over the file.
-		// No environment variable: the two that exist are part of the
-		// compatibility contract and are owed to earlier versions, this one
-		// is not owed to anything.
-		if *stack != "" {
-			seedConfig.Stack = *stack
+		// Unlike the two above, this one does not override the file. See
+		// Config.CheckStackFlag: the stack has a shape on disk, so a flag
+		// that contradicts an established home would leave the key file
+		// and the configuration disagreeing.
+		if err := seedConfig.CheckStackFlag(*stack); err != nil {
+			fail(err)
 		}
 	}
 

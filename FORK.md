@@ -622,7 +622,8 @@ otherwise:
 
 1. the binary is named `tenderseed`;
 2. top-level flags `-home`, `-config`, `-chain-id`, `-seeds`, with `-stack`
-   added;
+   added. The first four override the configuration file; `-stack` sets it when
+   the file is created and is refused when it contradicts an existing one;
 3. subcommands `start` and `show-node-id`, with `version` added;
 4. the home layout: `config/config.toml`, `config/node_key.json`, and the book at
    `data/addrbook.json`. **The layout is preserved, the file contents are not.**
