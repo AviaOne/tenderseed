@@ -609,7 +609,6 @@ Named here so that nothing above is read as covering it:
 
 - the memory cost of a TM2 seed holding many inbound connections at once;
 - how fast a TM2 seed's inbound slots fill when nothing hangs up;
-- compile duration, which the Go cache would falsify without a full clean;
 - running behaviour beyond startup, on either stack.
 
 ---
