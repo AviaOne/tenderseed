@@ -112,6 +112,14 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 	}
 	s.Logger = slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: level}))
 
+	// The startup banner goes out at info whatever the level, because
+	// "none leaves only the startup banner" is what the README promises and
+	// what the Cosmos side does, where the banner is written before the
+	// filter is applied. Without this, a level of "none" left an operator
+	// with a silent process and no way to tell which key or which chain it
+	// had started on.
+	banner := slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	chainID := s.Config.ChainID
 	nodeKeyFilePath := s.Config.NodeKeyFile
 	addrBookFilePath := s.Config.AddrBookFile
@@ -185,7 +193,7 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 	p2pConfig.MaxPacketMsgPayloadSize = s.Config.MaxPacketMsgPayloadSize
 	p2pConfig.AllowDuplicateIP = s.Config.AllowDuplicateIP
 
-	s.Logger.Info("tenderseed",
+	banner.Info("tenderseed",
 		"key", nodeKey.ID(),
 		"stack", StackTM2,
 		"listen", s.Config.ListenAddress,
@@ -214,6 +222,7 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 	store, err := NewSeedBook(
 		addrBookFilePath,
 		*addr,
+		s.Config.AddrBookStrict,
 		s.Logger.With("module", "book"),
 	)
 	if err != nil {
@@ -260,6 +269,7 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 		s.Config.AddrBookStrict,
 		disconnectWait,
 		checkPeriod,
+		s.Config.MaxNumOutboundPeers,
 		metrics,
 		s.Logger.With("module", seedTM2ReactorName),
 	)

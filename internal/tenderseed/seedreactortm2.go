@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"sync"
 	"time"
 
 	"github.com/gnolang/gno/tm2/pkg/amino"
@@ -50,9 +49,36 @@ const freshnessFactor = 3
 // before it leaves the book.
 const maxConsecutiveFailures = 5
 
+// dialCost is what one address costs the switch, worst case.
+//
+// The switch dials one address at a time, in one loop, and a dead address is
+// paid in full: three seconds of TCP timeout before anything else is even
+// attempted. So a batch is not only limited by the slots available, it is
+// limited by how many addresses the period can hold at that price. This is a
+// deliberate under-estimate of the true worst case, which adds the two
+// handshake deadlines: over-estimating the cost only means a smaller batch and
+// a slower rotation, under-estimating it means marking attempts that never
+// happened, which is the defect this bound exists to prevent.
+const dialCost = 3 * time.Second
+
 // errSeedServed is the reason recorded when the seed closes a connection it
 // has finished answering. It is not a failure; it is the seed's whole purpose.
 var errSeedServed = errors.New("seed has served its addresses")
+
+// errSeedQueueFull is the reason recorded when a peer stops taking what it
+// asked for. Unlike errSeedServed this one is a fault and is reported as an
+// error, because a peer that does not drain the channel it opened is either
+// broken or doing it on purpose.
+var errSeedQueueFull = errors.New("peer is not draining the discovery channel")
+
+// cycleIntervalFloor and cycleIntervalCeiling bound how often the cycle looks
+// at the peers. The interval follows the wait, so a short wait is honoured
+// closely, without letting a very short one turn into a busy loop or a very
+// long one delay every hang up.
+const (
+	cycleIntervalFloor   = time.Second
+	cycleIntervalCeiling = 30 * time.Second
+)
 
 // seedChannel is the discovery channel descriptor.
 //
@@ -104,11 +130,13 @@ type SeedReactorTM2 struct {
 	// sweep and the ageing with it.
 	checkPeriod time.Duration
 
+	// maxOutbound is the switch's own outbound limit, held here because the
+	// switch discards anything above it at the moment it is handed over,
+	// with a log line and nothing this reactor can hear.
+	maxOutbound int
+
 	// metrics is nil when the endpoint is disabled.
 	metrics *seedTM2Metrics
-
-	mtx       sync.Mutex
-	scheduled map[p2ptypes.ID]struct{}
 
 	ctx      context.Context
 	cancelFn context.CancelFunc
@@ -120,6 +148,7 @@ func NewSeedReactorTM2(
 	strict bool,
 	wait time.Duration,
 	checkPeriod time.Duration,
+	maxOutbound int,
 	metrics *seedTM2Metrics,
 	logger *slog.Logger,
 ) *SeedReactorTM2 {
@@ -131,8 +160,8 @@ func NewSeedReactorTM2(
 		strict:      strict,
 		wait:        wait,
 		checkPeriod: checkPeriod,
+		maxOutbound: maxOutbound,
 		metrics:     metrics,
-		scheduled:   make(map[p2ptypes.ID]struct{}),
 		ctx:         ctx,
 		cancelFn:    cancelFn,
 	}
@@ -157,6 +186,10 @@ func (r *SeedReactorTM2) OnStart() error {
 
 	go r.crawl()
 	go r.persist()
+
+	if r.wait > 0 {
+		go r.cycle()
+	}
 
 	if r.checkPeriod > 0 {
 		go r.sweep()
@@ -184,30 +217,123 @@ func (r *SeedReactorTM2) sweep() {
 		case <-ticker.C:
 		}
 
-		stale := r.book.Stale(r.freshness())
-		if len(stale) == 0 {
+		r.sweepOnce()
+	}
+}
+
+// sweepOnce is one pass of the sweep.
+//
+// The rule it enforces is the whole of this function: an attempt is marked
+// only for an address actually handed to the switch. A failure is deduced
+// from an attempt that no success followed, which is sound reasoning about a
+// dial that took place and says nothing at all about one that did not. Two
+// cases used to break it, and both are now taken out before anything is
+// marked:
+//
+//   - an address this seed already holds a connection to. The switch skips it
+//     silently, so no success can ever follow, so the deduction counted a
+//     failure against a peer that was answering at that very moment. Six
+//     sweeps of that and the book evicted a live address.
+//   - an address above what the switch can take. Over its outbound limit the
+//     switch discards the whole remainder with a log line, and a batch larger
+//     than the period can dial leaves its tail marked before it was tried.
+func (r *SeedReactorTM2) sweepOnce() {
+	// The whole stale set, ordered, then narrowed. Narrowing before the
+	// order would hand the ceiling to whatever the map returned first.
+	stale := r.book.StaleBatch(r.freshness(), 0)
+
+	eligible := make([]*p2ptypes.NetAddress, 0, len(stale))
+	connected := 0
+
+	for _, addr := range stale {
+		if r.Switch.Peers().Has(addr.ID) {
+			connected++
 			continue
 		}
 
-		for _, addr := range stale {
-			r.book.MarkAttempt(addr)
-		}
-
-		r.Switch.DialPeers(stale...)
-
-		dropped := r.book.DropFailing(maxConsecutiveFailures)
-
-		r.metrics.observeMany(resultRetried, stageSweep, len(stale))
-		r.metrics.observeMany(resultDropped, stageSweep, dropped)
-		r.metrics.setBook(r.book.Size(), len(r.book.Fresh(r.freshness())))
-
-		r.logger.Info("verification sweep",
-			"tried", len(stale),
-			"dropped", dropped,
-			"book", r.book.Size(),
-			"fresh", len(r.book.Fresh(r.freshness())),
-		)
+		eligible = append(eligible, addr)
 	}
+
+	overBudget := 0
+
+	if budget := r.sweepBudget(); len(eligible) > budget {
+		overBudget = len(eligible) - budget
+		eligible = eligible[:budget]
+	}
+
+	for _, addr := range eligible {
+		r.book.MarkAttempt(addr)
+	}
+
+	if len(eligible) > 0 {
+		r.Switch.DialPeers(eligible...)
+	}
+
+	dropped := r.book.DropFailing(maxConsecutiveFailures)
+
+	fresh := len(r.book.FreshBatch(r.freshness(), r.servableCeiling()))
+
+	r.metrics.observeMany(resultRetried, stageSweep, len(eligible))
+	r.metrics.observeMany(resultDropped, stageSweep, dropped)
+	r.metrics.observeMany(resultSkippedConnected, stageSweep, connected)
+	r.metrics.observeMany(resultSkippedBudget, stageSweep, overBudget)
+	r.metrics.setBook(r.book.Size(), fresh)
+
+	r.logger.Info("verification sweep",
+		"tried", len(eligible),
+		"connected", connected,
+		"over_budget", overBudget,
+		"dropped", dropped,
+		"book", r.book.Size(),
+		"fresh", fresh,
+	)
+}
+
+// sweepBudget is how many addresses one sweep may hand to the switch.
+//
+// Two ceilings, and the batch takes the lower. Slots, because the switch drops
+// everything above its outbound limit at the moment it is handed over.
+// Throughput, because the switch dials one at a time and a dead address costs
+// a full timeout, so a batch bigger than the period can hold is a batch whose
+// tail is marked again before it was ever tried.
+func (r *SeedReactorTM2) sweepBudget() int {
+	slots := r.maxOutbound - int(r.Switch.Peers().NumOutbound())
+	if slots < 0 {
+		slots = 0
+	}
+
+	throughput := int(r.checkPeriod / dialCost)
+
+	if throughput < slots {
+		return throughput
+	}
+
+	return slots
+}
+
+// servableCeiling is how many addresses this seed may call fresh.
+//
+// Fresh means proven recently, so a seed cannot promise it for more addresses
+// than it can prove again inside the window. The window is freshnessFactor
+// periods, one period proves at most one batch, so the ceiling is that
+// product. What lies above stays in the book, held and unserved, waiting its
+// turn to be proven rather than being handed out on an expired proof. The
+// Cosmos side already serves a subset of a larger book; this is the same
+// arrangement rather than a new one.
+//
+// The answer ceiling applies on top: this bounds what may be called fresh,
+// maxAddressesServed bounds what fits in one message.
+func (r *SeedReactorTM2) servableCeiling() int {
+	throughput := int(r.checkPeriod / dialCost)
+	if throughput <= 0 {
+		return maxAddressesServed
+	}
+
+	if ceiling := throughput * freshnessFactor; ceiling < maxAddressesServed {
+		return ceiling
+	}
+
+	return maxAddressesServed
 }
 
 // freshness is how long a success stays good.
@@ -276,10 +402,12 @@ func (r *SeedReactorTM2) AddPeer(peer p2p.PeerConn) {
 	go r.request(peer)
 }
 
-// RemovePeer forgets a peer's pending hang up.
-func (r *SeedReactorTM2) RemovePeer(peer p2p.PeerConn, reason any) {
-	r.forget(peer.ID())
-}
+// RemovePeer is required by the reactor interface and has nothing to do.
+//
+// It used to cancel a pending hang up. There is no longer one to cancel: the
+// cycle reads the peer set as it is, so a peer that has left is simply not
+// there any more.
+func (r *SeedReactorTM2) RemovePeer(peer p2p.PeerConn, reason any) {}
 
 // request asks a peer for its addresses.
 func (r *SeedReactorTM2) request(peer p2p.PeerConn) {
@@ -289,7 +417,11 @@ func (r *SeedReactorTM2) request(peer p2p.PeerConn) {
 		return
 	}
 
-	if !peer.Send(discovery.Channel, payload) {
+	// Non blocking on purpose. A blocking send waits up to ten seconds on a
+	// full queue, and there is nothing to wait for: the crawl comes round
+	// again in seconds, and a peer that cannot take a request now is one this
+	// seed has no reason to hold a goroutine for.
+	if !peer.TrySend(discovery.Channel, payload) {
 		r.logger.Debug("unable to send discovery request", "peer", peer.ID())
 	}
 }
@@ -342,7 +474,7 @@ func (r *SeedReactorTM2) serve(peer p2p.PeerConn) error {
 			"verified", r.book.VerifiedSize(),
 		)
 
-		r.scheduleDisconnect(peer)
+		r.hangUp(peer)
 
 		return nil
 	}
@@ -352,8 +484,16 @@ func (r *SeedReactorTM2) serve(peer p2p.PeerConn) error {
 		return fmt.Errorf("unable to marshal discovery response, %w", err)
 	}
 
-	if !peer.Send(discovery.Channel, payload) {
+	// Non blocking, and this one is not a comfort. serve runs on the receive
+	// loop of the very peer it answers, so a blocking send stops this seed
+	// from reading that peer for as long as it refuses to take the answer:
+	// ten seconds, once per request, on a channel where requests are not
+	// rate limited. A peer that asks and does not read is served nothing and
+	// hung up on.
+	if !peer.TrySend(discovery.Channel, payload) {
 		r.metrics.observe(resultFailed, stageServe)
+		r.Switch.StopPeerForError(peer, errSeedQueueFull)
+
 		return fmt.Errorf("unable to send discovery response to peer %s", peer.ID())
 	}
 
@@ -365,7 +505,7 @@ func (r *SeedReactorTM2) serve(peer p2p.PeerConn) error {
 		"verified", r.book.VerifiedSize(),
 	)
 
-	r.scheduleDisconnect(peer)
+	r.hangUp(peer)
 
 	return nil
 }
@@ -386,7 +526,7 @@ func (r *SeedReactorTM2) serve(peer p2p.PeerConn) error {
 // seeds, and saying nothing is honest where repeating unverified addresses
 // would not be.
 func (r *SeedReactorTM2) selection(requester p2ptypes.ID) []*p2ptypes.NetAddress {
-	known := r.book.Fresh(r.freshness())
+	known := r.book.FreshBatch(r.freshness(), r.servableCeiling())
 	addrs := make([]*p2ptypes.NetAddress, 0, len(known))
 
 	for _, addr := range known {
@@ -451,58 +591,88 @@ func (r *SeedReactorTM2) learn(addrs []*p2ptypes.NetAddress) {
 
 	r.book.AddPeers(kept...)
 	r.Switch.DialPeers(kept...)
-	r.metrics.setBook(r.book.Size(), len(r.book.Fresh(r.freshness())))
+	r.metrics.setBook(r.book.Size(), len(r.book.FreshBatch(r.freshness(), r.servableCeiling())))
 }
 
-// scheduleDisconnect closes the connection once the peer has had its answer.
+// hangUp closes the connection of a peer that has had its answer.
 //
 // The wait is seed_disconnect_wait_period, the key the Cosmos side already
 // uses for the same decision, so one setting means one thing on both stacks.
-// It is not zero by default because the answer is sent asynchronously: hanging
-// up the instant Send returns would race the send queue draining.
+// At zero the connection goes now; the answer is sent before this is reached,
+// so nothing is cut short.
 //
-// At most one timer per peer: a peer that asks repeatedly is not granted a
-// longer stay than one that asks once.
-func (r *SeedReactorTM2) scheduleDisconnect(peer p2p.PeerConn) {
+// Above zero nothing is scheduled here, and that is the point. A timer per
+// peer outlived the connection it was started for, so a peer that left and
+// came back had its second visit cut short by the timer of its first. The
+// cycle closes every connection older than the wait instead: one rule, one
+// place, no timer to outlive anything.
+func (r *SeedReactorTM2) hangUp(peer p2p.PeerConn) {
 	if r.wait <= 0 {
 		r.Switch.StopPeerForError(peer, errSeedServed)
-		return
 	}
-
-	id := peer.ID()
-
-	r.mtx.Lock()
-	if _, pending := r.scheduled[id]; pending {
-		r.mtx.Unlock()
-		return
-	}
-	r.scheduled[id] = struct{}{}
-	r.mtx.Unlock()
-
-	go func() {
-		timer := time.NewTimer(r.wait)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-		case <-r.ctx.Done():
-			r.forget(id)
-			return
-		}
-
-		r.forget(id)
-
-		// The peer may have left on its own in the meantime.
-		if p := r.Switch.Peers().Get(id); p != nil {
-			r.Switch.StopPeerForError(p, errSeedServed)
-		}
-	}()
 }
 
-func (r *SeedReactorTM2) forget(id p2ptypes.ID) {
-	r.mtx.Lock()
-	delete(r.scheduled, id)
-	r.mtx.Unlock()
+// cycle closes the connections that have lasted long enough, on their own
+// loop.
+func (r *SeedReactorTM2) cycle() {
+	ticker := time.NewTicker(r.cycleInterval())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		r.cycleOnce()
+	}
+}
+
+// cycleOnce closes every connection older than the wait.
+//
+// Every connection, and that is the correction. The hang up used to be
+// scheduled from the answer, so it reached the peers this seed had served and
+// no others: an inbound peer that never asked for anything held its slot for
+// ever, and an outbound one this seed had dialled was never re-dialled, so its
+// last proof was never renewed. Both are what the release notes already
+// promise to fix, and both are what the Cosmos side fixes through the core
+// with this same key.
+//
+// Cycling an outbound peer is also what makes a held connection provable
+// again: the next sweep dials it, and reaching it records a new success.
+func (r *SeedReactorTM2) cycleOnce() {
+	cycled := 0
+
+	for _, peer := range r.Switch.Peers().List() {
+		if peer == nil || peer.Status().Duration < r.wait {
+			continue
+		}
+
+		r.Switch.StopPeerForError(peer, errSeedServed)
+		cycled++
+	}
+
+	if cycled == 0 {
+		return
+	}
+
+	r.metrics.observeMany(resultCycled, stageCycle, cycled)
+	r.logger.Debug("cycled connections", "count", cycled)
+}
+
+// cycleInterval is how often the cycle runs, following the wait between the
+// two bounds.
+func (r *SeedReactorTM2) cycleInterval() time.Duration {
+	if r.wait < cycleIntervalFloor {
+		return cycleIntervalFloor
+	}
+
+	if r.wait > cycleIntervalCeiling {
+		return cycleIntervalCeiling
+	}
+
+	return r.wait
 }
 
 // shuffleAddresses shuffles in place, so that two consecutive requesters do

@@ -466,3 +466,20 @@ func TestNodeKeyErrorDoesNotAssertACause(t *testing.T) {
 		t.Errorf("error %q states a cause it has not established", err)
 	}
 }
+
+// TestValidateRefusesNegativeWorkers pins that the refusal belongs to the
+// common check and not to the stack that reads the key: a negative worker
+// count used to stop one stack from starting and start the other in silence.
+func TestValidateRefusesNegativeWorkers(t *testing.T) {
+	t.Parallel()
+
+	for _, stack := range []string{"", StackCosmos, StackTM2} {
+		config := DefaultConfig()
+		config.Stack = stack
+		config.PeerCheckWorkers = -1
+
+		if err := config.Validate(); err == nil {
+			t.Fatalf("stack %q accepted a negative peer_check_workers", stack)
+		}
+	}
+}

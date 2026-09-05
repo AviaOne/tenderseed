@@ -174,6 +174,14 @@ func (config Config) Validate() error {
 	if config.MaxPacketMsgPayloadSize <= 0 {
 		return fmt.Errorf("max_packet_msg_payload_size: must be positive, got %d", config.MaxPacketMsgPayloadSize)
 	}
+	// Refused here rather than where the value is read, so that it is refused
+	// on both stacks. The key only acts on Cosmos, but a key that means
+	// nothing on a stack still must not mean something absurd on it: a
+	// negative worker count stopped one stack from starting and started the
+	// other without a word.
+	if config.PeerCheckWorkers < 0 {
+		return fmt.Errorf("peer_check_workers: must not be negative, got %d", config.PeerCheckWorkers)
+	}
 	return nil
 }
 

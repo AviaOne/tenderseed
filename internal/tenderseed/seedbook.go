@@ -54,6 +54,16 @@ type bookRecord struct {
 	lastOK   time.Time
 }
 
+// lastNews is the later of the last success and the last attempt: the last
+// time this seed learned anything at all about the address.
+func (r *bookRecord) lastNews() time.Time {
+	if r.lastTry.After(r.lastOK) {
+		return r.lastTry
+	}
+
+	return r.lastOK
+}
+
 // SeedBook is the address book of a TM2 seed: the addresses it knows and what
 // it has learned about each of them. Safe for concurrent use.
 type SeedBook struct {
@@ -64,6 +74,17 @@ type SeedBook struct {
 	self     p2ptypes.NetAddress
 	maxPeers int
 
+	// strict refuses addresses that are not routable, honouring
+	// addr_book_strict. It is held here rather than in the reactor because
+	// the book has four ways in, and a rule held anywhere else has to be
+	// remembered at each of them.
+	strict bool
+
+	// saveMtx serialises the writes. Save releases the state lock while it
+	// marshals and writes, so without this two writers could reach the file
+	// out of order and leave the older snapshot behind.
+	saveMtx sync.Mutex
+
 	dirty      bool
 	generation uint64
 
@@ -72,12 +93,18 @@ type SeedBook struct {
 
 // NewSeedBook opens the book at the given path, creating nothing if the file
 // is absent. self is this node's own address and is never stored.
-func NewSeedBook(filePath string, self p2ptypes.NetAddress, logger *slog.Logger) (*SeedBook, error) {
+func NewSeedBook(
+	filePath string,
+	self p2ptypes.NetAddress,
+	strict bool,
+	logger *slog.Logger,
+) (*SeedBook, error) {
 	book := &SeedBook{
 		logger:   logger,
 		filePath: filePath,
 		self:     self,
 		maxPeers: defaultBookMaxPeers,
+		strict:   strict,
 		peers:    make(map[string]*bookRecord),
 	}
 
@@ -97,14 +124,20 @@ func (b *SeedBook) AddPeers(addrs ...*p2ptypes.NetAddress) {
 	now := time.Now()
 
 	for _, addr := range addrs {
-		if addr == nil || addr.Same(b.self) {
+		if !b.admissible(addr) || addr.Same(b.self) {
 			continue
 		}
 
 		key := addr.String()
 
 		if record, exists := b.peers[key]; exists {
+			// Marked changed on purpose: eviction drops the oldest seen
+			// first, so a refresh that never reaches the file would have
+			// the book evict on stale dates after a restart.
 			record.lastSeen = now
+			b.dirty = true
+			b.generation++
+
 			continue
 		}
 
@@ -126,7 +159,12 @@ func (b *SeedBook) MarkSuccess(addr *p2ptypes.NetAddress) {
 	defer b.mtx.Unlock()
 
 	now := time.Now()
+
 	record := b.record(addr, now)
+	if record == nil {
+		return
+	}
+
 	record.lastTry = now
 	record.lastOK = now
 	record.fails = 0
@@ -135,9 +173,38 @@ func (b *SeedBook) MarkSuccess(addr *p2ptypes.NetAddress) {
 	b.generation++
 }
 
-// record returns the entry for an address, creating it if needed.
+// admissible reports whether an address may enter the book at all.
+//
+// There are four ways in, not three: hearsay, a success, an attempt, and the
+// file on disk. An attempt creates an entry as surely as hearsay does, so a
+// rule applied at three of them is a rule that comes back through the fourth.
+// Held here, an address that is not admissible is one the book cannot contain,
+// whichever way it arrives and whoever wrote the file it arrives from.
+func (b *SeedBook) admissible(addr *p2ptypes.NetAddress) bool {
+	if addr == nil {
+		return false
+	}
+
+	if err := addr.Validate(); err != nil {
+		return false
+	}
+
+	if b.strict && !addr.Routable() {
+		return false
+	}
+
+	return true
+}
+
+// record returns the entry for an address, creating it if needed. It returns
+// nil for an address the book may not hold, so a caller that marks an
+// unknown address does not store it by the act of marking it.
 // The caller holds the lock.
 func (b *SeedBook) record(addr *p2ptypes.NetAddress, now time.Time) *bookRecord {
+	if !b.admissible(addr) {
+		return nil
+	}
+
 	key := addr.String()
 
 	record, exists := b.peers[key]
@@ -204,7 +271,11 @@ func (b *SeedBook) MarkAttempt(addr *p2ptypes.NetAddress) {
 	defer b.mtx.Unlock()
 
 	now := time.Now()
+
 	record := b.record(addr, now)
+	if record == nil {
+		return
+	}
 
 	if !record.lastTry.IsZero() && record.lastTry.After(record.lastOK) {
 		record.fails++
@@ -245,6 +316,97 @@ func (b *SeedBook) DropFailing(limit int) int {
 	}
 
 	return dropped
+}
+
+// StaleBatch returns at most limit addresses worth trying again, the ones
+// whose last news is oldest first. A limit of zero returns all of them.
+//
+// The order is the point. The book is a map, so an unsorted batch is drawn at
+// random, and the tail of a large book can go unchecked for a long time.
+// Ordering on the last news makes being tried send an address to the back of
+// the queue, so the rotation is a consequence of the order rather than a
+// mechanism of its own. Ordering on the last success alone would be wrong: an
+// address that never answered has no success at all, and would pass in front
+// of everything for ever.
+func (b *SeedBook) StaleBatch(window time.Duration, limit int) []*p2ptypes.NetAddress {
+	cutoff := time.Now().Add(-window)
+
+	return b.collectSorted(
+		func(record *bookRecord) bool {
+			return record.lastOK.IsZero() || record.lastOK.Before(cutoff)
+		},
+		func(left, right *bookRecord) bool {
+			return left.lastNews().Before(right.lastNews())
+		},
+		limit,
+	)
+}
+
+// FreshBatch returns at most limit addresses that answered within the window,
+// the most recently proven first. A limit of zero returns all of them.
+//
+// The limit is what freshness costs. Fresh means proven recently, so a seed
+// cannot claim it for more addresses than it is able to prove again inside the
+// window. What is above the limit stays held and unserved, waiting its turn to
+// be proven, rather than being handed out on a proof that has expired. The
+// other stack already serves a subset of a larger book; this is the same
+// arrangement, not a new one.
+func (b *SeedBook) FreshBatch(window time.Duration, limit int) []*p2ptypes.NetAddress {
+	keep := func(record *bookRecord) bool {
+		return !record.lastOK.IsZero()
+	}
+
+	if window > 0 {
+		cutoff := time.Now().Add(-window)
+		keep = func(record *bookRecord) bool {
+			return !record.lastOK.IsZero() && record.lastOK.After(cutoff)
+		}
+	}
+
+	return b.collectSorted(
+		keep,
+		func(left, right *bookRecord) bool {
+			return left.lastOK.After(right.lastOK)
+		},
+		limit,
+	)
+}
+
+// collectSorted is collect with an order and a ceiling.
+func (b *SeedBook) collectSorted(
+	keep func(*bookRecord) bool,
+	less func(left, right *bookRecord) bool,
+	limit int,
+) []*p2ptypes.NetAddress {
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	records := make([]*bookRecord, 0, len(b.peers))
+
+	for _, record := range b.peers {
+		if keep(record) {
+			records = append(records, record)
+		}
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		return less(records[i], records[j])
+	})
+
+	if limit > 0 && len(records) > limit {
+		records = records[:limit]
+	}
+
+	addrs := make([]*p2ptypes.NetAddress, 0, len(records))
+
+	for _, record := range records {
+		// Copied, IP included, for the reason collect gives.
+		copied := *record.addr
+		copied.IP = append(net.IP(nil), record.addr.IP...)
+		addrs = append(addrs, &copied)
+	}
+
+	return addrs
 }
 
 func (b *SeedBook) collect(keep func(*bookRecord) bool) []*p2ptypes.NetAddress {
@@ -294,6 +456,9 @@ func (b *SeedBook) VerifiedSize() int {
 // Save writes the book to disk, atomically. It does nothing when nothing has
 // changed since the last successful save.
 func (b *SeedBook) Save() error {
+	b.saveMtx.Lock()
+	defer b.saveMtx.Unlock()
+
 	b.mtx.Lock()
 	if !b.dirty {
 		b.mtx.Unlock()
@@ -409,7 +574,9 @@ func (b *SeedBook) load() error {
 			continue
 		}
 
-		if addr.Same(b.self) {
+		if !b.admissible(addr) || addr.Same(b.self) {
+			// A book written by a core node, or written here before the
+			// key was set, does not put back what the key refuses.
 			continue
 		}
 

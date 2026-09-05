@@ -11,6 +11,7 @@ const (
 	stageServe = "serve"
 	stageLearn = "learn"
 	stageSweep = "sweep"
+	stageCycle = "cycle"
 
 	resultServed   = "served"
 	resultEmpty    = "empty"
@@ -19,6 +20,17 @@ const (
 	resultRejected = "rejected"
 	resultRetried  = "retried"
 	resultDropped  = "dropped"
+
+	// The two reasons an address the sweep selected was not tried. They are
+	// separate because they mean different things to an operator: connected
+	// is a peer this seed is already talking to and has nothing to prove,
+	// over budget is work the switch could not have taken.
+	resultSkippedConnected = "skipped_connected"
+	resultSkippedBudget    = "skipped_budget"
+
+	// A connection closed because it had lasted long enough, whether the
+	// peer was served, silent, or one this seed dialled itself.
+	resultCycled = "cycled"
 )
 
 // seedTM2Outcomes lists the pairs that can actually occur, not their cartesian
@@ -39,6 +51,9 @@ var seedTM2Outcomes = [][2]string{
 	{resultRejected, stageLearn},
 	{resultRetried, stageSweep},
 	{resultDropped, stageSweep},
+	{resultSkippedConnected, stageSweep},
+	{resultSkippedBudget, stageSweep},
+	{resultCycled, stageCycle},
 }
 
 // seedTM2Metrics exports what a TM2 seed decides and what its book holds.
