@@ -232,8 +232,12 @@ the same way, since `AddAddress` refuses to change the address of an identity it
 already holds as old.
 
 **On failure**, the next attempt is spaced by 2^n seconds, capped at 4 hours.
-The formula is the upstream one used in `dialPeer`, deliberately: both
-accountings then live on the same scale and remain comparable. It is not
+That is the scale `dialPeer` uses upstream, deliberately, so both accountings
+remain comparable. It is not the same formula: upstream adds a random jitter of
+up to one second, which spreads the retries of thousands of nodes restarting
+together. Here the addresses of one sweep are already spread by the order they
+come out of the queue, so the jitter would buy nothing and would make one
+address's next attempt unpredictable from its verdict. It is not
 expressed in multiples of `peer_check_period`, which would have coupled two
 unrelated effects, since shortening the period to refresh the book faster would
 also have hardened the punishment of failures. The cap keeps this reactor on the
