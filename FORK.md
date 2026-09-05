@@ -525,27 +525,41 @@ Nothing in that path ever closes a connection.
 
 - **A book that is served.** Up to 250 verified addresses, the selection size the
   Cosmos side of this same binary already serves, against the core's 30 drawn
-  from connections.
+  from the connections a node happens to hold. The book holds more than it
+  serves: an address counts as fresh only while this seed is able to prove it
+  again inside the freshness window, so what lies above that ceiling stays held
+  and unserved, waiting its turn to be proven rather than being handed out on an
+  expired proof. The Cosmos side already serves a subset of a larger book, so
+  this is the same arrangement rather than a new one.
 - **Verification state on top of the core's own file.** The same JSON shape and
   the same 1000-address ceiling, plus three optional fields: consecutive
   failures, last attempt, last success. Anything that does not know them ignores
   them, so one file holds one state and either side can read it. No buckets, no
   promotion, no new-versus-old bias: the primitives the Cosmos policy is built
   on do not exist here, so the policy is transposed and not the mechanism.
-- **A hang-up after answering**, on `seed_disconnect_wait_period`, the key the
-  Cosmos side already uses for the same decision. A peer that asks repeatedly
-  gets no longer a stay than one that asks once.
-- **A hang-up when there is nothing to serve.** An empty book is the state where
-  an unanswered peer costs the most, since it holds the slot the next one needs.
+- **A hang-up on `seed_disconnect_wait_period`, for every connection old
+  enough.** Not only the peers this seed answered: an inbound peer that never
+  asks for anything holds a slot just as long, and an outbound peer that is
+  never dialled again can never prove its reachability anew. This is the rule
+  the Cosmos side already applies through the core, with the same key. A peer
+  that asks repeatedly gets no longer a stay than one that asks once, and a
+  peer the seed had nothing to answer is closed like any other, an empty book
+  being the state where an unanswered peer costs the most.
 - **`addr_book_strict` honoured**, on the way in as well as on the way out, so an
   unroutable address is not stored, not dialled, and does not return after a
   restart. A public seed that kept the core's behaviour would hand out addresses
   nobody can dial.
 - **A sweep on `peer_check_period`.** Stale addresses are handed to the switch
   rather than dialled directly, so one dialler keeps holding the outbound limit
-  and the duplicate-IP rule. Five consecutive failures evict an address. A
-  success is trusted for three periods, so a sweep may miss once without
-  emptying what the seed can answer.
+  and the duplicate-IP rule. One sweep hands over what the free outbound slots
+  and the period can really take, oldest news first, and an attempt is recorded
+  only for an address actually handed over: the switch silently skips one it is
+  already connected to, and discards whatever exceeds its outbound limit, so
+  counting either as an attempt would count a failure against an address that
+  was never tried. Being tried sends an address to the back of the queue, so
+  the rotation follows from the order instead of being a mechanism of its own.
+  Five consecutive failures evict an address. A success is trusted for three
+  periods, so a sweep may miss once without emptying what the seed can answer.
 - **Counters**, on the shape of the Cosmos ones: one series for the decisions, by
   outcome and by the stage that took them, one for the size of the book and of
   its servable part, every reachable pair published at zero so a share can be
@@ -612,8 +626,10 @@ which is the one thing this measurement settles in its favour.
 Named here so that nothing above is read as covering it:
 
 - the memory cost of a TM2 seed holding many inbound connections at once;
-- how fast a TM2 seed's inbound slots fill when nothing hangs up;
-- running behaviour beyond startup, on either stack.
+- behaviour at saturation, on either stack: no run has approached the inbound
+  ceiling;
+- how the sweep behaves on a book far larger than the networks this stack has
+  today, where the batch would be bounded by the period at every pass.
 
 ---
 

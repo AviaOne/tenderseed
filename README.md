@@ -103,9 +103,10 @@ evidence behind each one.
     compares full address strings and such an entry could never match.
 14. **A second family of chains.** Since v3.0.0 the same binary also serves
     Tendermint2, the p2p code of gno.land, where it answers from a verified
-    address book instead of from the connections it happens to hold, and hangs
-    up once it has answered. Neither exists in that stack. One process serves
-    one family, declared at install time.
+    address book instead of from the connections it happens to hold, and closes
+    every connection that has lasted long enough, so its slots keep turning
+    over. Neither exists in that stack. One process serves one family, declared
+    at install time.
 
 ---
 
@@ -541,8 +542,8 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 
 | key | default | what it does |
 |---|---|---|
-| `seed_disconnect_wait_period` | `5m` | how long a crawled peer stays connected before the PEX reactor disconnects it. Upstream leaves this at zero, which drops peers on the first crawl round, often before they have answered. Too short and the book stays empty; too long and outbound connections pile up |
-| `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour |
+| `seed_disconnect_wait_period` | `5m` | how long a connection may last before the seed closes it. Every connection, not only the peers it dialled: an inbound peer that never asks for anything holds a slot just as long, and a peer already served has no reason to stay. Upstream leaves this at zero, which drops peers on the first crawl round, often before they have answered. Too short and the book stays empty; too long and slots stop turning over. Both families apply it the same way, the Cosmos side through the core and gno.land through this seed |
+| `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour. On gno.land it also bounds how many addresses the seed may call fresh, since it can only promise fresh what it is able to prove again inside the window: a much shorter period there buys freshness by serving fewer addresses |
 | `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 29 minutes sequentially and about 3m40 with 8 workers. Lower it on a constrained machine. It has no effect on gno.land, where the sweep hands its addresses to the switch in one call instead of dialling them itself |
 | `allow_duplicate_ip` | `true` | allow several peers behind a single IP address. Setting it to `false` also changes the meaning of "already connected", so it interacts with verification |
 | `metrics_listen_addr` | empty | address to serve Prometheus metrics on, for example `127.0.0.1:26660`. Empty disables the endpoint. A port already taken is logged and the seed keeps serving peers, unlike an unusable `metrics_namespace` which refuses to start: the first can resolve itself, the second never will |
@@ -589,11 +590,18 @@ go build -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=
 
 ### Metrics
 
-Set `metrics_listen_addr`, restart, and scrape it:
+Set `metrics_listen_addr`, restart, and scrape it. `metrics_namespace` is the
+prefix of every series, `cometbft` by default on both families:
 
 ```bash
-curl -s 127.0.0.1:26660/metrics | grep '^cometbft_p2p'
+curl -s 127.0.0.1:26660/metrics
 ```
+
+The series differ by family, because the two seeds take different decisions.
+What follows is the whole of what each exports. A Cosmos seed also carries the
+p2p series of its core, which the gno.land core does not have.
+
+#### On a Cosmos seed
 
 Verification reports its own work, which nothing upstream counts. One series,
 two labels, ten reachable pairs, and they always sum to the number of decisions
@@ -625,6 +633,42 @@ reconstruct: the total of both stages is the upper bound.
 `dropped_full` rising is not: it means the queue is saturated and the sweep is
 no longer covering the selection. Without a Prometheus setup the same figures
 appear once per sweep in the logs, as a `verification sweep` line at info level.
+
+#### On a gno.land seed
+
+Two series, under the same rule: one pair per behaviour an operator can act on,
+never one per branch of the code, and every reachable pair published at zero so
+a share can be read from the first scrape.
+
+```bash
+curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_tm2_decisions_total'
+```
+
+| outcome | stage | meaning |
+|---|---|---|
+| `served` | serve | a request was answered with addresses |
+| `empty` | serve | a request arrived and the seed had no fresh address to give. This is the series that matters most, because a seed serving nothing looks healthy from the outside: it still listens, accepts and answers |
+| `failed` | serve | the peer that asked did not take the answer, so it was hung up on instead of being waited for |
+| `accepted` | learn | an address announced by a peer was kept |
+| `rejected` | learn | an address announced by a peer was refused, as invalid or as unroutable under `addr_book_strict` |
+| `retried` | sweep | a stale address was handed to the switch to be dialled again |
+| `dropped` | sweep | an address left the book after five consecutive failures |
+| `skipped_connected` | sweep | a stale address was not tried because this seed already holds a connection to it. Nothing is counted against it: the switch skips an address it is already connected to, so no attempt takes place and none is claimed |
+| `skipped_budget` | sweep | a stale address was not tried because the switch could not have taken it within this period, on free slots or on dialling rate. It comes first at the next sweep, being then the oldest news |
+| `cycled` | cycle | a connection was closed for having lasted longer than `seed_disconnect_wait_period` |
+
+The second series is the book:
+
+```bash
+curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_tm2_book_addresses'
+```
+
+`known` is every address held, `fresh` is the part of it the seed may serve.
+`known` standing above `fresh` is the normal state and not a fault: an address
+is only called fresh while the seed is able to prove it again inside the
+freshness window, and what lies above that waits its turn rather than being
+handed out on an expired proof. `empty` rising while `known` is large means the
+seed knows addresses it has not been able to reach, not that it has none.
 
 ---
 
