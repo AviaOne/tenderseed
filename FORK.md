@@ -95,7 +95,10 @@ This fork supplies the missing part.
 ### 2.3 Crawled peers are dropped before they answer
 
 `SeedDisconnectWaitPeriod` is never set by upstream, so it is zero, and every
-non-persistent outbound peer is disconnected on the first crawl round.
+non-persistent peer is disconnected on the first crawl round. Every one, not
+only the peers the seed dialled: the loop walks the whole peer set, skips the
+persistent ones and stops the rest, so an inbound peer that never asked for
+anything is governed by the same key.
 
 CometBFT hardcodes 28 hours for a full node. That number derives from the time a
 peer needs to become "good" through the consensus reactor. A seed has no

@@ -57,7 +57,8 @@ package. Every other line of the table is what its imports say it is, and an
 import survey is what checks it.
 
 Tests sit beside their subject: `config_test.go` on the common side,
-`seedreactor_test.go` on TM1, `seedbook_test.go` on TM2.
+`seedreactor_test.go` on TM1, `seedbook_test.go` and
+`seedreactortm2_test.go` on TM2.
 
 **How the two cores are pinned, which is not symmetric.** `go.mod` requires
 CometBFT at a released version and gno at a pseudo-version, that is at a
@@ -106,7 +107,7 @@ line anchors are there, TM1 in sections 2.2, 2.3 and 3.6, TM2 in 6.2, 6.3 and
 | address book | buckets, persistent, keyed by node identity | one flat store, a thousand entries, keyed by the full address string |
 | qualification of an address | exists, and on a seed nothing calls it: only the consensus reactor promotes, and a seed runs none | does not exist. The stored *last seen* dates a mention, never a contact |
 | what a seed answers from | its book, through a biased selection | the peers it is connected to at that instant, capped at thirty, whatever the store holds |
-| closing an idle connection | a served inbound peer is closed on the spot, and any other outbound one on a configured delay | nothing closes anything. Pings keep an idle peer alive indefinitely |
+| closing an idle connection | a served inbound peer is closed on the spot, and every other non-persistent one on a configured delay, inbound peers that never asked included | nothing closes anything. Pings keep an idle peer alive indefinitely |
 | routability of what is shared | applied, and configurable | deliberately skipped, so that loopback addresses stay usable in local clusters |
 | dropping a peer from outside the core | a graceful path exists | one exported path, which reports every use of itself as a failure |
 | refusing itself | the transport refuses its own identity | the transport does not. Only the switch and the store step around themselves |
@@ -129,7 +130,11 @@ chains alone. What those same keys are worth on the other side:
   `moniker`, `node_key_file`, `addr_book_file`, `max_num_inbound_peers`,
   `max_num_outbound_peers`, `max_packet_msg_payload_size`,
   `allow_duplicate_ip`, `metrics_listen_addr`, `metrics_namespace`,
-  `seed_disconnect_wait_period`, `peer_check_period`.
+  `seed_disconnect_wait_period`.
+- **`peer_check_period`** means the same thing on both, and carries one more
+  consequence on TM2: it bounds how many addresses may be called fresh, since
+  a seed can only promise fresh what it is able to prove again inside the
+  window. Shortening it there buys freshness by serving fewer addresses.
 - **`addr_book_strict`** has no equivalent in the TM2 core, which has no notion
   of strict routability at all. This layer honours it there anyway, on the way
   in as well as on the way out.
@@ -227,10 +232,13 @@ absence of jitter in the backoff.
   information, because it is the only one recognisable by an error value
   rather than by the wording of a message. The rest is what any TM2 node
   produces and does not belong to this project.
-- **One answer can hold one connection's reading.** The answer is sent from
-  the receive loop of that connection, and the send blocks until a timeout
-  when the send queue is full. The queue capacity makes it rare; the path
-  exists and it is on a seed's critical path.
+- **A peer that does not drain the discovery channel is served nothing.** The
+  answer is sent from the receive loop of that same connection, so a blocking
+  send would stop this seed from reading that peer for as long as it refused to
+  take the answer, once per request, on a channel where requests are not rate
+  limited. The send is therefore non blocking, and such a peer is hung up on
+  rather than waited for. The trade is deliberate: the alternative is a reading
+  loop a third party can freeze on demand.
 - **Holding a connection is the exception on this network.** A node announcing
   the discovery channel alone keeps a handful of connections against dozens of
   known addresses, reproduced three times, twice under a different identity. A
@@ -245,6 +253,18 @@ absence of jitter in the backoff.
   series of every existing Cosmos seed, breaking dashboards that work today
   for no gain, and a key whose default depended on the family would be one key
   meaning two things. It is configurable.
+- **A process serving one family still carries the other, and that costs
+  memory.** Both families live in one package, so both dependency graphs are
+  linked into the binary and initialised in every process, whichever family is
+  configured. Measured on two versions running side by side on the same chain
+  for half a day: the resident memory of the one carrying both graphs sits
+  about a third higher, and most of that is pages of the binary itself, which
+  is about a third larger. What the Go runtime holds from the operating system
+  is the same on both, and does not climb, so this is a fixed cost rather than
+  something that grows. It changes no sizing decision: the dominant cost of a
+  seed is still its per-peer buffers, and the whole gap is worth a few dozen
+  connections. Worth re-measuring the day the pinned commit of the second
+  family moves, since that is what sets it.
 
 ---
 

@@ -80,7 +80,7 @@ type Config struct {
 	AllowDuplicateIP        bool `toml:"allow_duplicate_ip" comment:"allow multiple peers from the same IP address"`
 	AddrBookStrict          bool `toml:"addr_book_strict" comment:"Set true for strict routability rules\n Set false for private or local networks"`
 
-	SeedDisconnectWaitPeriod string `toml:"seed_disconnect_wait_period" comment:"##############################################################\n##                     SEED BEHAVIOUR                     ###\n#############################################################\n how long a crawled peer stays connected before being\n disconnected, as a duration (\"5m\", \"30s\", \"1h\")"`
+	SeedDisconnectWaitPeriod string `toml:"seed_disconnect_wait_period" comment:"##############################################################\n##                     SEED BEHAVIOUR                     ###\n#############################################################\n how long a connection may last before the seed closes it, as a\n duration (\"5m\", \"30s\", \"1h\"). Every connection, not only the\n peers this seed dialled: one that never asks for anything holds\n a slot just as long"`
 	PeerCheckPeriod          string `toml:"peer_check_period" comment:"how often served addresses are re-verified, as a duration;\n 0 disables verification"`
 	PeerCheckWorkers         int    `toml:"peer_check_workers" comment:"cosmos only: how many verification dials run in parallel;\n 0 means the default of 8, it does not disable anything"`
 

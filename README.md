@@ -32,7 +32,7 @@ which is the only family upstream ever served.
 |---|---|---|
 | Built on Tendermint `v0.34.22`, end of life | No security fixes, no compatibility with current chains | Runs on CometBFT `v0.40.x`, an actively supported family |
 | The address book is never qualified. `MarkGood` is never called, so every entry stays in a *new* bucket and the 70% bias toward *old* buckets has nothing to select | Your seed hands out addresses that may be long dead. It serves noise instead of peers | Addresses are dialled before being served, and the served selection is re-checked on a timer |
-| `SeedDisconnectWaitPeriod` is never set, so it is zero. Every crawled peer is dropped on the first crawl round, often before it has answered | Your address book barely grows | The value is exposed, documented, and defaults to 5 minutes |
+| `SeedDisconnectWaitPeriod` is never set, so it is zero. Every non-persistent peer is dropped on the first crawl round, often before it has answered | Your address book barely grows | The value is exposed, documented, and defaults to 5 minutes |
 
 **Where it starts.** Two production seeds ran the upstream binary for years and
 held **4 and 6 addresses**, not one of which had ever been verified. Only the
@@ -74,8 +74,9 @@ evidence behind each one.
    dials run in parallel through a worker pool, and remember their verdicts:
    a failing address is re-tried on the upstream exponential schedule instead
    of at every sweep, and one just verified is not dialled again immediately.
-4. **Crawl connection lifetime.** `seed_disconnect_wait_period` is exposed and
-   documented, default 5 minutes.
+4. **Connection lifetime.** `seed_disconnect_wait_period` is exposed and
+   documented, default 5 minutes. It governs every connection the seed holds,
+   not only the ones it dialled.
 5. **p2p configuration surface.** Parameters are actually wired through to the
    `Switch`, not merely logged. `allow_duplicate_ip` is configurable instead of
    hardcoded.
