@@ -530,8 +530,9 @@ Nothing in that path ever closes a connection.
   Cosmos side of this same binary already serves, against the core's 30 drawn
   from the connections a node happens to hold. The book holds more than it
   serves: an address counts as fresh only while this seed is able to prove it
-  again inside the freshness window, so what lies above that ceiling stays held
-  and unserved, waiting its turn to be proven rather than being handed out on an
+  again inside the freshness window, which its dialling rate and its outbound
+  limit bound together, so what lies above that ceiling stays held and
+  unserved, waiting its turn to be proven rather than being handed out on an
   expired proof. The Cosmos side already serves a subset of a larger book, so
   this is the same arrangement rather than a new one.
 - **Verification state on top of the core's own file.** The same JSON shape and

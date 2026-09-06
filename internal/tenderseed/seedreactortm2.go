@@ -321,15 +321,41 @@ func (r *SeedReactorTM2) sweepBudget() int {
 // Cosmos side already serves a subset of a larger book; this is the same
 // arrangement rather than a new one.
 //
+// A batch is bounded by two things, and so is this, by the same two: the rate
+// at which the switch dials, and its outbound limit, above which a hand over
+// is discarded. Taking only the first promised fresh more addresses than the
+// seed could ever prove again whenever the limit was the binding one.
+//
+// Where the sweep reads the free slots of the moment, this reads the
+// configured limit. A ceiling on what may be called fresh has to hold across
+// the whole window rather than follow the connections open at the instant a
+// request arrives, and reading the free slots here would empty the answer
+// exactly when the seed is busiest.
+//
 // The answer ceiling applies on top: this bounds what may be called fresh,
 // maxAddressesServed bounds what fits in one message.
 func (r *SeedReactorTM2) servableCeiling() int {
-	throughput := int(r.checkPeriod / dialCost)
-	if throughput <= 0 {
+	// A disabled sweep disables the ageing with it, so nothing goes stale and
+	// the answer ceiling is the only one left.
+	if r.checkPeriod <= 0 {
 		return maxAddressesServed
 	}
 
-	if ceiling := throughput * freshnessFactor; ceiling < maxAddressesServed {
+	batch := int(r.checkPeriod / dialCost)
+	if r.maxOutbound < batch {
+		batch = r.maxOutbound
+	}
+
+	// This ceiling reaches the book as a limit, where zero means no limit at
+	// all, so it never falls below one. A seed whose period or whose outbound
+	// limit leaves it unable to prove even one address a pass serves nothing
+	// regardless: the freshness window empties the batch on its own, and one
+	// is the honest floor where zero would mean the whole book.
+	if batch < 1 {
+		batch = 1
+	}
+
+	if ceiling := batch * freshnessFactor; ceiling < maxAddressesServed {
 		return ceiling
 	}
 

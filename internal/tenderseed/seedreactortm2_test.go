@@ -284,10 +284,39 @@ func TestServableCeiling(t *testing.T) {
 	t.Run("the answer ceiling still applies on top", func(t *testing.T) {
 		t.Parallel()
 
-		reactor, _, _ := newSweepFixture(t, time.Hour, 60)
+		// Both bounds wide, so neither of them is the one under test.
+		reactor, _, _ := newSweepFixture(t, time.Hour, 100)
 
 		if got := reactor.servableCeiling(); got != maxAddressesServed {
 			t.Fatalf("ceiling is %d, expected %d", got, maxAddressesServed)
+		}
+	})
+
+	t.Run("the outbound limit bounds it as the period does", func(t *testing.T) {
+		t.Parallel()
+
+		// The period could prove far more than twenty addresses a pass; the
+		// switch would discard everything above its limit, so the seed may
+		// not call fresh what that limit keeps it from ever proving again.
+		reactor, _, _ := newSweepFixture(t, time.Hour, 20)
+
+		if got := reactor.servableCeiling(); got != 20*freshnessFactor {
+			t.Fatalf("ceiling is %d, expected %d", got, 20*freshnessFactor)
+		}
+	})
+
+	t.Run("the ceiling never reaches the value the book reads as no limit", func(t *testing.T) {
+		t.Parallel()
+
+		// Zero is what SeedBook.FreshBatch takes as no limit at all, so a
+		// ceiling of zero would serve the whole book: the exact opposite of
+		// what this ceiling is for.
+		for _, maxOutbound := range []int{0, 1} {
+			reactor, _, _ := newSweepFixture(t, time.Hour, maxOutbound)
+
+			if got := reactor.servableCeiling(); got < 1 {
+				t.Fatalf("ceiling is %d with %d outbound, expected at least 1", got, maxOutbound)
+			}
 		}
 	})
 

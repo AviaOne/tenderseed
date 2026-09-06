@@ -134,7 +134,9 @@ chains alone. What those same keys are worth on the other side:
 - **`peer_check_period`** means the same thing on both, and carries one more
   consequence on TM2: it bounds how many addresses may be called fresh, since
   a seed can only promise fresh what it is able to prove again inside the
-  window. Shortening it there buys freshness by serving fewer addresses.
+  window, and what it can prove is bounded by its dialling rate and by
+  `max_num_outbound_peers` together. Shortening the period there buys freshness
+  by serving fewer addresses, and so does a tight outbound limit.
 - **`addr_book_strict`** has no equivalent in the TM2 core, which has no notion
   of strict routability at all. This layer honours it there anyway, on the way
   in as well as on the way out.
