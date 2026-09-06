@@ -12,8 +12,11 @@ import (
 	toml "github.com/pelletier/go-toml"
 )
 
-// DefaultSeedDisconnectWaitPeriod is how long a crawled outbound peer is kept
-// connected before the PEX reactor disconnects it.
+// DefaultSeedDisconnectWaitPeriod is how long a connection may last before
+// the seed closes it. Every connection, not only the peers this seed dialled:
+// the upstream loop walks the whole peer set and stops every non-persistent
+// one, inbound peers that never asked for anything included, and the TM2
+// cycle applies the same rule.
 //
 // CometBFT hardcodes 28 hours for a full node (node/setup.go). That value is
 // derived from the time a peer needs to become "good" through the consensus
