@@ -24,6 +24,7 @@ func main() {
 	configFile := flag.String("config", "config/config.toml", "path to config.toml, relative to home or absolute")
 	chainID := flag.String("chain-id", "", "chain id")
 	seeds := flag.String("seeds", "", "comma separated list of seeds")
+	stack := flag.String("stack", "", `p2p stack of the chain served, "cosmos" or "tm2"; empty keeps the configured value`)
 
 	// parse top level flags
 	flag.Parse()
@@ -42,7 +43,19 @@ func main() {
 			fail(err)
 		}
 
-		seedConfig, err = tenderseed.LoadOrGenConfig(configFilePath)
+		// The stack has to be settled before the configuration is created,
+		// not after. The first run of show-node-id creates this file and the
+		// node identity together, and the identity format belongs to the
+		// stack, so an operator who has no file yet has no other way to say
+		// which one is served. An unknown value is refused here rather than
+		// written into a file the operator would then have to repair.
+		if *stack != "" {
+			if _, err := (tenderseed.Config{Stack: *stack}).SeedStack(); err != nil {
+				fail(err)
+			}
+		}
+
+		seedConfig, err = tenderseed.LoadOrGenConfig(configFilePath, *stack)
 		if err != nil {
 			fail(err)
 		}
@@ -71,10 +84,19 @@ func main() {
 		} else if envSeeds != "" {
 			seedConfig.Seeds = envSeeds
 		}
+
+		// Unlike the two above, this one does not override the file. See
+		// Config.CheckStackFlag: the stack has a shape on disk, so a flag
+		// that contradicts an established home would leave the key file
+		// and the configuration disagreeing.
+		if err := seedConfig.CheckStackFlag(*stack); err != nil {
+			fail(err)
+		}
 	}
 
 	subcommands.ImportantFlag("home")
 	subcommands.ImportantFlag("config")
+	subcommands.ImportantFlag("stack")
 
 	subcommands.Register(subcommands.HelpCommand(), "")
 	subcommands.Register(&cmd.StartArgs{

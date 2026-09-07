@@ -230,8 +230,11 @@ func freshWindow(period time.Duration) time.Duration {
 	return window
 }
 
-// backoffFor is the upstream formula, 2^n seconds, capped. Sharing the scale
-// with pex_reactor.go:544 keeps the two accountings comparable, and leaves the
+// backoffFor is 2^n seconds, capped: the scale pex_reactor.go:544 uses, without
+// the random jitter it adds ahead of the exponential term. That jitter spreads
+// the retries of many nodes restarting at once; the addresses of one sweep are
+// already spread by the order they leave the queue. Sharing the scale
+// keeps the two accountings comparable, and leaves the
 // spacing independent of peer_check_period: shortening the period to refresh
 // faster would otherwise harden the punishment of failures at the same time.
 func backoffFor(fails int) time.Duration {

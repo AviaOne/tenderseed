@@ -11,6 +11,7 @@ import (
 
 	"github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/libs/log"
+	cmtos "github.com/cometbft/cometbft/libs/os"
 	cmtstrings "github.com/cometbft/cometbft/libs/strings"
 	"github.com/cometbft/cometbft/p2p"
 	"github.com/cometbft/cometbft/p2p/pex"
@@ -42,7 +43,7 @@ type Seed struct {
 
 // Version is the software version announced to peers during the handshake.
 // Override it at build time with -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=<value>".
-var Version = "2.2.2"
+var Version = "3.0.0"
 
 // NewSeed builds every component of a seed node and wires them together.
 // It listens on the configured address but does not start the switch.
@@ -113,7 +114,7 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 
 	nodeKey, err := p2p.LoadOrGenNodeKey(nodeKeyFilePath)
 	if err != nil {
-		return nil, err
+		return nil, nodeKeyError(nodeKeyFilePath, StackCosmos, err)
 	}
 	s.NodeKey = nodeKey
 
@@ -168,7 +169,14 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		return nil, err
 	}
 
+	// The core accepts connections without any ceiling on how many handshakes
+	// it carries out at once, and the limit on inbound peers is compared only
+	// after a handshake has completed. A peer therefore costs a full key
+	// exchange before anything counts it. The core exposes a ceiling for this
+	// and nothing was passing it; it is set to the configured inbound limit,
+	// which is the number of peers this seed agreed to hold anyway.
 	s.Transport = p2p.NewMultiplexTransport(nodeInfo, *nodeKey, p2p.MConnConfig(p2pConfig))
+	p2p.MultiplexTransportMaxIncomingConnections(p2pConfig.MaxNumInboundPeers)(s.Transport)
 	if err := s.Transport.Listen(*addr); err != nil {
 		return nil, err
 	}
@@ -194,6 +202,11 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 	// the question of why the others bother.
 	var seedMetrics *verifyMetrics
 	if s.Config.MetricsListenAddress != "" {
+		if s.Config.MetricsNamespace == "" {
+			s.closeTransport()
+			return nil, errEmptyMetricsNamespace
+		}
+
 		seedMetrics, err = newVerifyMetrics(s.Config.MetricsNamespace)
 		if err != nil {
 			s.closeTransport()
@@ -248,6 +261,24 @@ func (s *Seed) Start() error {
 		return err
 	}
 	return nil
+}
+
+// TrapSignal installs the shutdown handler of the Cosmos stack.
+//
+// It belongs here rather than in the caller because it logs, and the logger is
+// the one type the two stacks do not share.
+//
+// Trap after Start, not before. A signal arriving while Switch.Start runs
+// would find IsRunning false and close the transport under a switch that is
+// still starting. Before that point there is nothing to save and nothing to
+// stop, so the default disposition is the correct one.
+func (s *Seed) TrapSignal() {
+	cmtos.TrapSignal(s.FilteredLogger, func() {
+		s.FilteredLogger.Info("shutting down...")
+		if err := s.Stop(); err != nil {
+			s.FilteredLogger.Error("error while shutting down", "err", err)
+		}
+	})
 }
 
 // Wait blocks until the switch stops.

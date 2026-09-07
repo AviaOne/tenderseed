@@ -1,10 +1,14 @@
 # Tenderseed
 
-A lightweight seed node for **CometBFT** p2p networks.
+A lightweight seed node for **CometBFT** and **Tendermint2** p2p networks.
 
 Maintained fork of [binaryholdings/tenderseed](https://github.com/binaryholdings/tenderseed)
-by [AviaOne.com](https://aviaone.com), rebuilt on CometBFT `v0.40.x` and taught to
-verify the addresses it hands out.
+by [AviaOne.com](https://aviaone.com), rebuilt on CometBFT `v0.40.x`, taught to
+verify the addresses it hands out, and since v3.0.0 able to serve gno.land as
+well.
+
+One binary serves either family. Which one it serves is declared once, at
+install time, and everything else in this document is the same for both.
 
 Released under semantic tags, starting at **v2.0.0**. Upstream carries no tag at
 all and has not moved since February 2023, so the major version marks the break:
@@ -21,13 +25,14 @@ almost nothing to run.
 ## Already running Tenderseed? Read this first
 
 If you operate a seed built from the upstream project, three measured problems
-affect you right now.
+affect you right now. Everything in this section was measured on Cosmos chains,
+which is the only family upstream ever served.
 
 | Problem in upstream Tenderseed | What it means for you | Fixed here |
 |---|---|---|
 | Built on Tendermint `v0.34.22`, end of life | No security fixes, no compatibility with current chains | Runs on CometBFT `v0.40.x`, an actively supported family |
 | The address book is never qualified. `MarkGood` is never called, so every entry stays in a *new* bucket and the 70% bias toward *old* buckets has nothing to select | Your seed hands out addresses that may be long dead. It serves noise instead of peers | Addresses are dialled before being served, and the served selection is re-checked on a timer |
-| `SeedDisconnectWaitPeriod` is never set, so it is zero. Every crawled peer is dropped on the first crawl round, often before it has answered | Your address book barely grows | The value is exposed, documented, and defaults to 5 minutes |
+| `SeedDisconnectWaitPeriod` is never set, so it is zero. Every non-persistent peer is dropped on the first crawl round, often before it has answered | Your address book barely grows | The value is exposed, documented, and defaults to 5 minutes |
 
 **Where it starts.** Two production seeds ran the upstream binary for years and
 held **4 and 6 addresses**, not one of which had ever been verified. Only the
@@ -41,9 +46,10 @@ misleading:
   568** addresses on those two chains. Reproduced over two independent cycles.
 - **In steady state**, past roughly 35 hours, the book settles at **ten to twenty
   addresses, nearly all of them verified reachable**: 10 of 10 and 14 of 15 after
-  eight days. Upstream evicts an address after 16 failed dials, which is where
-  the rest goes. A book of ten live addresses is not a smaller book, it is the
-  same book without the dead entries.
+  eight days. Upstream evicts an address after seventeen failed dials, and on a
+  seed that eviction is permanent until the process restarts, which is where the
+  rest goes. A book of ten live addresses is not a smaller book, it is the same
+  book without the dead entries.
 
 **The figure that matters to you is what a new node gets from the seed**, and it
 is the one you can reproduce: start a node with an empty address book and one
@@ -56,7 +62,7 @@ limits in [FORK.md](FORK.md), section 5.4.
 
 ## What this fork changes
 
-Thirteen changes, all measured against upstream. See [FORK.md](FORK.md) for the
+Sixteen changes, all measured against upstream. See [FORK.md](FORK.md) for the
 evidence behind each one.
 
 1. **Supported p2p stack.** CometBFT `v0.40.0`, pinned, instead of Tendermint
@@ -68,8 +74,9 @@ evidence behind each one.
    dials run in parallel through a worker pool, and remember their verdicts:
    a failing address is re-tried on the upstream exponential schedule instead
    of at every sweep, and one just verified is not dialled again immediately.
-4. **Crawl connection lifetime.** `seed_disconnect_wait_period` is exposed and
-   documented, default 5 minutes.
+4. **Connection lifetime.** `seed_disconnect_wait_period` is exposed and
+   documented, default 5 minutes. It governs every connection the seed holds,
+   not only the ones it dialled.
 5. **p2p configuration surface.** Parameters are actually wired through to the
    `Switch`, not merely logged. `allow_duplicate_ip` is configurable instead of
    hardcoded.
@@ -95,6 +102,34 @@ evidence behind each one.
     carrying its own node ID, so verification never dials the seed itself. An
     unspecified `laddr` such as `0.0.0.0` is not registered, because the book
     compares full address strings and such an entry could never match.
+14. **A second family of chains.** Since v3.0.0 the same binary also serves
+    Tendermint2, the p2p code of gno.land, where it answers from a verified
+    address book instead of from the connections it happens to hold, and closes
+    every connection that has lasted long enough, so its slots keep turning
+    over. Neither exists in that stack. One process serves one family, declared
+    at install time.
+15. **What one peer may do is bounded, on gno.land.** A list of addresses is
+    taken only from a peer this seed asked, and only so many from one answer;
+    a peer that asks again immediately is not answered twice; and a message on
+    that channel is refused far below the size the core accepts. The Cosmos
+    side has all three from its own core, which refuses an unsolicited list
+    outright. That stack has none of them, and without them one message from
+    anyone was enough to empty what the seed serves.
+16. **What a peer may make the seed do is rated against what it can check.**
+    How many addresses one peer may have the seed take in over a period is
+    what that period is able to dial, divided between the peers the seed is
+    listening to, so the more sources it hears the less any one of them
+    decides. It follows `peer_check_period` and `max_num_outbound_peers`
+    rather than any value of its own, and an address the seed already knows
+    costs nothing. An address the seed stays connected to outbound keeps its
+    proof for as long as the connection lasts, so a long
+    `seed_disconnect_wait_period` no longer ages out what the seed is talking
+    to. And an answer is built one address per network range in turn, so a
+    party running many reachable nodes gets a share of it matching its share of
+    ranges rather than its share of addresses. The seed asks only the peers it dialled
+    itself, so being heard costs a reachable address rather than a connection.
+    And an address that carries a name instead of an IP is refused on arrival,
+    where reading it used to resolve that name on the spot.
 
 ---
 
@@ -145,10 +180,18 @@ without editing anything. Set them once, in the terminal you are working in:
 ```bash
 export CHAIN_ID=cosmoshub-4
 export SEED_PORT=26656
+export STACK=cosmos
 ```
 
 Replace `cosmoshub-4` with the chain you serve, and pick a free port if 26656 is
 already taken on your machine.
+
+`STACK` is the p2p family the chain belongs to: `cosmos` for a CometBFT chain,
+`tm2` for gno.land. Nothing in a chain identifier says which one it is, on
+either side, so it cannot be guessed and you have to state it. It decides the
+format of your seed identity and of your address book, so **set it before step
+4**, where the identity is created. A home directory belongs to one family and
+cannot be moved to the other.
 
 Two things to keep in mind:
 
@@ -192,13 +235,16 @@ port, and its own systemd service.
 
 ```bash
 sudo -u tenderseed mkdir -p /home/tenderseed/.tenderseed/${CHAIN_ID}
-sudo -u tenderseed tenderseed -home /home/tenderseed/.tenderseed/${CHAIN_ID} show-node-id
+sudo -u tenderseed tenderseed -home /home/tenderseed/.tenderseed/${CHAIN_ID} -stack ${STACK} show-node-id
 ```
 
 That command does two things: it creates `config/config.toml` and
 `config/node_key.json` if they do not exist, and it prints your node identity.
+`-stack` is what tells it which identity format to create, and it is recorded in
+the configuration, so you do not have to pass it again.
 
-The identity looks like `0123456789abcdef0123456789abcdef01234567`. Other
+The identity looks like `0123456789abcdef0123456789abcdef01234567` on a Cosmos
+chain, and like `g1lhfv35wyvr9ggtnvjluwvsujnazeqjs050tgek` on gno.land. Other
 operators need it to reach your seed, in the form
 `<node-id>@<your-host>:<port>`.
 
@@ -209,7 +255,8 @@ operators need it to reach your seed, in the form
 ### Step 5 - Configure
 
 The first run wrote a complete `config.toml` containing every option, its
-default value, and a comment describing it. Open it:
+default value, and a comment describing it. What you may have to change sits at
+the top, under a banner; everything below it has a working default. Open it:
 
 ```bash
 sudo -u tenderseed nano /home/tenderseed/.tenderseed/${CHAIN_ID}/config/config.toml
@@ -224,8 +271,19 @@ chain_id = "cosmoshub-4"
 seeds = "<node-id>@<host>:<port>,<node-id>@<host>:<port>"
 ```
 
-Get seed addresses for your chain from its Chain Registry entry, or from
-[ABS](https://aviaone.com/blockchains-service/).
+Seed addresses carry the identity format of their own family, so a list written
+for one is unusable on the other. Get the ones for your chain from its Chain
+Registry entry, or from [ABS](https://aviaone.com/blockchains-service/).
+
+On gno.land only, one further key may need a value:
+
+```toml
+# tm2 only: value announced for the "app" entry of the version set
+app_version = ""
+```
+
+It belongs to the chain rather than to this binary, and empty matches what
+gno.land announces today.
 
 The listening port, which must match the `SEED_PORT` you opened in UFW:
 
@@ -306,8 +364,15 @@ Check that the address book is filling up. After a few minutes it should hold
 far more than a handful of entries:
 
 ```bash
+# cosmos
 sudo -u tenderseed python3 -c "import json;print(len(json.load(open('/home/tenderseed/.tenderseed/${CHAIN_ID}/data/addrbook.json'))['addrs']))"
+
+# tm2
+sudo -u tenderseed python3 -c "import json;print(len(json.load(open('/home/tenderseed/.tenderseed/${CHAIN_ID}/data/addrbook.json'))['peers']))"
 ```
+
+The two families write the same file under two shapes, which is why the command
+differs.
 
 Verify the port is reachable from outside your machine, from another host:
 
@@ -410,9 +475,10 @@ match yours, and Docker never changes the ownership of a bind mount.
 ```bash
 export CHAIN_ID=cosmoshub-4
 export SEED_PORT=26656
+export STACK=cosmos
 mkdir -p ~/tenderseed-data/${CHAIN_ID}
 docker run --rm --user "$(id -u):$(id -g)" \
-  -v ~/tenderseed-data/${CHAIN_ID}:/data tenderseed:latest show-node-id
+  -v ~/tenderseed-data/${CHAIN_ID}:/data tenderseed:latest -stack ${STACK} show-node-id
 ```
 
 This writes `config/config.toml` and `config/node_key.json` into
@@ -424,7 +490,8 @@ This writes `config/config.toml` and `config/node_key.json` into
 nano ~/tenderseed-data/${CHAIN_ID}/config/config.toml
 ```
 
-Set `chain_id` and `seeds` as described in the Linux section.
+Set `chain_id` and `seeds` as described in the Linux section. `stack` is
+already recorded from step 2.
 
 ### Step 4 - Run
 
@@ -483,26 +550,28 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 |---|---|---|
 | `laddr` | `tcp://0.0.0.0:26656` | address and port to listen on for incoming connections |
 | `chain_id` | empty | network identifier of the chain this seed serves |
-| `seeds` | empty | comma-separated `<node-id>@<host>:<port>` list used to bootstrap discovery. May be emptied once the address book is populated |
+| `stack` | `cosmos` | p2p family of that chain, `cosmos` or `tm2`. Empty means `cosmos`, so a file written before this key existed keeps its behaviour. An unknown value refuses to start |
+| `app_version` | empty | gno.land only: value announced for the `app` entry of the version set. It belongs to the chain, not to this binary |
+| `seeds` | empty | comma-separated `<node-id>@<host>:<port>` list used to bootstrap discovery. May be emptied once the address book is populated. An entry that cannot be parsed stops the seed at start up on both stacks, naming what is wrong: starting with one seed fewer than was written is doing less than was asked, quietly |
 | `log_level` | `info` | `debug`, `info`, `warn`, `error` or `none`. It applies to the seed own lines as well, so `none` leaves only the startup banner |
 | `node_key_file` | `config/node_key.json` | path to the node identity, relative to the home directory or absolute |
 | `addr_book_file` | `data/addrbook.json` | path to the address book, relative to the home directory or absolute |
 | `addr_book_strict` | `true` | strict routability rules. Set `false` for private or local networks, otherwise non-routable addresses are rejected |
-| `max_num_inbound_peers` | `100` | how many nodes may be connected to your seed at once |
-| `max_num_outbound_peers` | `60` | how many peers the seed dials while crawling |
+| `max_num_inbound_peers` | `100` | how many nodes may be connected to your seed at once. Must be positive: at zero both stacks accept no connection at all, so the seed serves nobody while every line it logs looks normal |
+| `max_num_outbound_peers` | `60` | how many peers the seed dials while crawling. **On Cosmos it has no effect in seed mode**: the only place the core reads it is a routine that a seed never runs, so the value is carried to the switch and never consulted. On gno.land it is read, and it also bounds how many addresses the seed serves: an address is only called fresh while the seed can prove it again, and one sweep hands over no more than the free outbound slots. Refused at zero on both stacks, because it means something on one of them and a key must not mean two things |
 | `max_packet_msg_payload_size` | `1024` | maximum message packet payload, in bytes |
 
 ### Keys added by this fork
 
 | key | default | what it does |
 |---|---|---|
-| `seed_disconnect_wait_period` | `5m` | how long a crawled peer stays connected before the PEX reactor disconnects it. Upstream leaves this at zero, which drops peers on the first crawl round, often before they have answered. Too short and the book stays empty; too long and outbound connections pile up |
-| `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour |
-| `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 29 minutes sequentially and about 3m40 with 8 workers. Lower it on a constrained machine |
-| `allow_duplicate_ip` | `true` | allow several peers behind a single IP address. Setting it to `false` also changes the meaning of "already connected", so it interacts with verification |
+| `seed_disconnect_wait_period` | `5m` | how long a connection may last before the seed closes it. Every connection, not only the peers it dialled: an inbound peer that never asks for anything holds a slot just as long, and a peer already served has no reason to stay. Upstream leaves this at zero, which drops peers on the first crawl round, often before they have answered. Too short and the book stays empty; too long and slots stop turning over. Both families apply it the same way, the Cosmos side through the core and gno.land through this seed |
+| `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour: on gno.land the sweep is also the one thing that paces what the seed asks the switch to dial, so disabling it gives that pacing up as well, the whole book is dialled at start up and addresses are dialled as they are learned, as the core does. **On gno.land a value between zero and nine seconds is refused at start up**, nine seconds being what one dial costs at worst there: below it the seed cannot prove a single address between two passes, so it would dial nothing and serve nothing without saying so. On gno.land it also bounds how many addresses the seed may call fresh, since it can only promise fresh what it is able to prove again inside the window: a much shorter period there buys freshness by serving fewer addresses. `max_num_outbound_peers` bounds that same quantity, and the lower of the two applies |
+| `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 29 minutes sequentially and about 3m40 with 8 workers. Lower it on a constrained machine. It has no effect on gno.land, where the sweep hands its addresses to the switch in one call instead of dialling them itself |
+| `allow_duplicate_ip` | `true` | allow several peers behind a single IP address. What `false` does depends on the stack. **On Cosmos it applies to the connections the seed opens, never to the ones it accepts**: the core has an inbound filter for this, and this seed registers none, so two inbound peers from one host are accepted whatever the value. It also changes the meaning of "already connected" there, so it interacts with verification. On gno.land the core applies it at acceptance, so `false` does refuse a second inbound connection from one host |
 | `metrics_listen_addr` | empty | address to serve Prometheus metrics on, for example `127.0.0.1:26660`. Empty disables the endpoint. A port already taken is logged and the seed keeps serving peers, unlike an unusable `metrics_namespace` which refuses to start: the first can resolve itself, the second never will |
-| `metrics_namespace` | `cometbft` | prefix of every exported series. Matches the upstream default, so dashboards written for a full node work unchanged |
-| `moniker` | empty | name announced to peers. Empty means `<chain_id>-seed` |
+| `metrics_namespace` | `cometbft` | prefix of every exported series. Matches the upstream default, so dashboards written for a full node work unchanged. The same prefix is used on gno.land, where the name is inherited rather than accurate |
+| `moniker` | empty | name announced to peers. Empty means `<chain_id>-seed`. Must be printable ASCII: both stacks refuse a node info whose moniker is not, at the far end of a handshake, so a value that is not is refused here instead, where the key can be named |
 
 ### Flags and environment variables
 
@@ -514,6 +583,7 @@ file but not the flags.
 -config     path to config.toml, relative to home or absolute
 -chain-id   overrides chain_id
 -seeds      overrides seeds
+-stack      overrides stack, and sets it when config.toml is created
 ```
 
 ```
@@ -543,11 +613,18 @@ go build -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=
 
 ### Metrics
 
-Set `metrics_listen_addr`, restart, and scrape it:
+Set `metrics_listen_addr`, restart, and scrape it. `metrics_namespace` is the
+prefix of every series, `cometbft` by default on both families:
 
 ```bash
-curl -s 127.0.0.1:26660/metrics | grep '^cometbft_p2p'
+curl -s 127.0.0.1:26660/metrics
 ```
+
+The series differ by family, because the two seeds take different decisions.
+What follows is the whole of what each exports. A Cosmos seed also carries the
+p2p series of its core, which the gno.land core does not have.
+
+#### On a Cosmos seed
 
 Verification reports its own work, which nothing upstream counts. One series,
 two labels, ten reachable pairs, and they always sum to the number of decisions
@@ -579,6 +656,44 @@ reconstruct: the total of both stages is the upper bound.
 `dropped_full` rising is not: it means the queue is saturated and the sweep is
 no longer covering the selection. Without a Prometheus setup the same figures
 appear once per sweep in the logs, as a `verification sweep` line at info level.
+
+#### On a gno.land seed
+
+Two series, under the same rule: one pair per behaviour an operator can act on,
+never one per branch of the code, and every reachable pair published at zero so
+a share can be read from the first scrape.
+
+```bash
+curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_tm2_decisions_total'
+```
+
+| outcome | stage | meaning |
+|---|---|---|
+| `served` | serve | a request was answered with addresses |
+| `empty` | serve | a request arrived and the seed had no fresh address to give. This is the series that matters most, because a seed serving nothing looks healthy from the outside: it still listens, accepts and answers |
+| `failed` | serve | the peer that asked did not take the answer, so it was hung up on instead of being waited for |
+| `accepted` | learn | an address announced by a peer was kept |
+| `rejected` | learn | an address announced by a peer was refused: invalid, unroutable under `addr_book_strict`, or beyond what one answer may carry |
+| `unsolicited` | learn | a peer sent addresses this seed had not asked it for, and they were dropped unread. Rising means someone is pushing addresses at your seed rather than answering it |
+| `too_soon` | serve | a peer asked again before the shortest gap between two answers had passed, and was not answered. Rising means one peer is repeating rather than crawling |
+| `retried` | sweep | a stale address was handed to the switch to be dialled again |
+| `dropped` | sweep | an address left the book after five consecutive failures |
+| `skipped_connected` | sweep | a stale address was not tried because this seed already holds a connection to it. Nothing is counted against it: the switch skips an address it is already connected to, so no attempt takes place and none is claimed |
+| `skipped_budget` | sweep | a stale address was not tried because the switch could not have taken it within this period, on free slots or on dialling rate. It comes first at the next sweep, being then the oldest news |
+| `cycled` | cycle | a connection was closed for having lasted longer than `seed_disconnect_wait_period` |
+
+The second series is the book:
+
+```bash
+curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_tm2_book_addresses'
+```
+
+`known` is every address held, `fresh` is the part of it the seed may serve.
+`known` standing above `fresh` is the normal state and not a fault: an address
+is only called fresh while the seed is able to prove it again inside the
+freshness window, and what lies above that waits its turn rather than being
+handed out on an expired proof. `empty` rising while `known` is large means the
+seed knows addresses it has not been able to reach, not that it has none.
 
 ---
 
