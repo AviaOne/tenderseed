@@ -855,3 +855,69 @@ func TestSeedBookConcurrentSave(t *testing.T) {
 		t.Fatalf("file holds %d addresses, memory holds %d", reopened.Size(), book.Size())
 	}
 }
+
+// TestSeedBookEvictionOrder is the regression test of the eviction that let
+// hearsay push out what this seed had reached.
+func TestSeedBookEvictionOrder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("hearsay leaves before a reached address", func(t *testing.T) {
+		t.Parallel()
+
+		book, _ := newBookForTest(t)
+
+		reached := []*p2ptypes.NetAddress{bookAddr(t, 300), bookAddr(t, 301)}
+		book.AddPeers(reached...)
+
+		for _, addr := range reached {
+			book.MarkSuccess(addr)
+		}
+
+		book.maxPeers = 3
+
+		// The reached pair is the oldest by mention, so a book evicting on
+		// mention alone drops exactly what it exists to serve.
+		for n := range 4 {
+			book.AddPeers(bookAddr(t, 310+n))
+		}
+
+		if book.Size() != 3 {
+			t.Fatalf("book holds %d addresses, expected its ceiling of 3", book.Size())
+		}
+
+		if got := book.VerifiedSize(); got != 2 {
+			t.Fatalf("%d reached addresses survived, expected both", got)
+		}
+	})
+
+	t.Run("the least recently proven goes first among the reached", func(t *testing.T) {
+		t.Parallel()
+
+		book, _ := newBookForTest(t)
+
+		first := bookAddr(t, 320)
+		second := bookAddr(t, 321)
+		third := bookAddr(t, 322)
+
+		book.AddPeers(first, second, third)
+
+		book.MarkSuccess(first)
+		time.Sleep(2 * time.Millisecond)
+		book.MarkSuccess(second)
+		time.Sleep(2 * time.Millisecond)
+		book.MarkSuccess(third)
+
+		book.maxPeers = 2
+		book.AddPeers(bookAddr(t, 323))
+
+		if book.Size() != 2 {
+			t.Fatalf("book holds %d addresses, expected its ceiling of 2", book.Size())
+		}
+
+		for _, addr := range book.GetPeers() {
+			if addr.ID == first.ID {
+				t.Fatal("the least recently proven address was kept")
+			}
+		}
+	})
+}

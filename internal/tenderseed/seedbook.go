@@ -180,6 +180,12 @@ func (b *SeedBook) MarkSuccess(addr *p2ptypes.NetAddress) {
 // rule applied at three of them is a rule that comes back through the fourth.
 // Held here, an address that is not admissible is one the book cannot contain,
 // whichever way it arrives and whoever wrote the file it arrives from.
+//
+// One rule is not held here and the sentence above does not cover it: this
+// node's own address is refused where hearsay and the file come in, and
+// nowhere else, so a success or an attempt on it would store it. Nothing
+// reaches those two paths with it today, since the switch does not connect a
+// node to itself and an attempt only revisits what the book already holds.
 func (b *SeedBook) admissible(addr *p2ptypes.NetAddress) bool {
 	if addr == nil {
 		return false
@@ -508,8 +514,19 @@ func (b *SeedBook) Flush() error {
 	return b.Save()
 }
 
-// evict drops the oldest entries until the book fits. The caller holds the
-// lock.
+// evict drops entries until the book fits, the never reached ones first. The
+// caller holds the lock.
+//
+// The order is what makes the ceiling safe. Dropping on the last mention
+// alone let hearsay push out what this seed had reached: an address nobody
+// can dial, mentioned a second ago, is newer than one that answered an hour
+// ago and has not been mentioned since, so the population this seed exists to
+// serve was the first to go. A stranger able to send addresses could empty
+// the served set by filling the book, in one message, and what was left was
+// written to disk within the minute and dialled again at the next start.
+//
+// So the never reached go first, oldest mention first among them, and only
+// once they are exhausted do the reached go, least recently proven first.
 func (b *SeedBook) evict() {
 	if len(b.peers) <= b.maxPeers {
 		return
@@ -521,7 +538,20 @@ func (b *SeedBook) evict() {
 	}
 
 	sort.Slice(records, func(i, j int) bool {
-		return records[i].lastSeen.Before(records[j].lastSeen)
+		left, right := records[i], records[j]
+
+		leftReached := !left.lastOK.IsZero()
+		rightReached := !right.lastOK.IsZero()
+
+		if leftReached != rightReached {
+			return rightReached
+		}
+
+		if leftReached {
+			return left.lastOK.Before(right.lastOK)
+		}
+
+		return left.lastSeen.Before(right.lastSeen)
 	})
 
 	for i := range len(b.peers) - b.maxPeers {

@@ -108,6 +108,13 @@ evidence behind each one.
     every connection that has lasted long enough, so its slots keep turning
     over. Neither exists in that stack. One process serves one family, declared
     at install time.
+15. **What one peer may do is bounded, on gno.land.** A list of addresses is
+    taken only from a peer this seed asked, and only so many from one answer;
+    a peer that asks again immediately is not answered twice; and a message on
+    that channel is refused far below the size the core accepts. The Cosmos
+    side has all three from its own core, which refuses an unsolicited list
+    outright. That stack has none of them, and without them one message from
+    anyone was enough to empty what the seed serves.
 
 ---
 
@@ -536,7 +543,7 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 | `addr_book_file` | `data/addrbook.json` | path to the address book, relative to the home directory or absolute |
 | `addr_book_strict` | `true` | strict routability rules. Set `false` for private or local networks, otherwise non-routable addresses are rejected |
 | `max_num_inbound_peers` | `100` | how many nodes may be connected to your seed at once |
-| `max_num_outbound_peers` | `60` | how many peers the seed dials while crawling. On gno.land it also bounds how many addresses the seed serves: an address is only called fresh while the seed can prove it again, and one sweep hands over no more than the free outbound slots |
+| `max_num_outbound_peers` | `60` | how many peers the seed dials while crawling. Must be positive: at zero the seed dials nothing, so it verifies nothing, so it has nothing to serve, and every line it logs looks normal. On gno.land it also bounds how many addresses the seed serves: an address is only called fresh while the seed can prove it again, and one sweep hands over no more than the free outbound slots |
 | `max_packet_msg_payload_size` | `1024` | maximum message packet payload, in bytes |
 
 ### Keys added by this fork
@@ -544,7 +551,7 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 | key | default | what it does |
 |---|---|---|
 | `seed_disconnect_wait_period` | `5m` | how long a connection may last before the seed closes it. Every connection, not only the peers it dialled: an inbound peer that never asks for anything holds a slot just as long, and a peer already served has no reason to stay. Upstream leaves this at zero, which drops peers on the first crawl round, often before they have answered. Too short and the book stays empty; too long and slots stop turning over. Both families apply it the same way, the Cosmos side through the core and gno.land through this seed |
-| `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour. On gno.land it also bounds how many addresses the seed may call fresh, since it can only promise fresh what it is able to prove again inside the window: a much shorter period there buys freshness by serving fewer addresses. `max_num_outbound_peers` bounds that same quantity, and the lower of the two applies |
+| `peer_check_period` | `10m` | how often the addresses the seed would serve are re-verified. Shorter means a fresher book at the cost of more outbound traffic. `0` disables verification entirely, which restores upstream behaviour: on gno.land the sweep is also the one thing that paces what the seed asks the switch to dial, so disabling it gives that pacing up as well, and addresses are dialled as they are learned, as the core does. On gno.land it also bounds how many addresses the seed may call fresh, since it can only promise fresh what it is able to prove again inside the window: a much shorter period there buys freshness by serving fewer addresses. `max_num_outbound_peers` bounds that same quantity, and the lower of the two applies |
 | `peer_check_workers` | `8` | how many verification dials run in parallel. A sweep of 250 addresses takes about 29 minutes sequentially and about 3m40 with 8 workers. Lower it on a constrained machine. It has no effect on gno.land, where the sweep hands its addresses to the switch in one call instead of dialling them itself |
 | `allow_duplicate_ip` | `true` | allow several peers behind a single IP address. Setting it to `false` also changes the meaning of "already connected", so it interacts with verification |
 | `metrics_listen_addr` | empty | address to serve Prometheus metrics on, for example `127.0.0.1:26660`. Empty disables the endpoint. A port already taken is logged and the seed keeps serving peers, unlike an unusable `metrics_namespace` which refuses to start: the first can resolve itself, the second never will |
@@ -651,7 +658,9 @@ curl -s 127.0.0.1:26660/metrics | grep '^cometbft_seed_tm2_decisions_total'
 | `empty` | serve | a request arrived and the seed had no fresh address to give. This is the series that matters most, because a seed serving nothing looks healthy from the outside: it still listens, accepts and answers |
 | `failed` | serve | the peer that asked did not take the answer, so it was hung up on instead of being waited for |
 | `accepted` | learn | an address announced by a peer was kept |
-| `rejected` | learn | an address announced by a peer was refused, as invalid or as unroutable under `addr_book_strict` |
+| `rejected` | learn | an address announced by a peer was refused: invalid, unroutable under `addr_book_strict`, or beyond what one answer may carry |
+| `unsolicited` | learn | a peer sent addresses this seed had not asked it for, and they were dropped unread. Rising means someone is pushing addresses at your seed rather than answering it |
+| `too_soon` | serve | a peer asked again before the shortest gap between two answers had passed, and was not answered. Rising means one peer is repeating rather than crawling |
 | `retried` | sweep | a stale address was handed to the switch to be dialled again |
 | `dropped` | sweep | an address left the book after five consecutive failures |
 | `skipped_connected` | sweep | a stale address was not tried because this seed already holds a connection to it. Nothing is counted against it: the switch skips an address it is already connected to, so no attempt takes place and none is claimed |

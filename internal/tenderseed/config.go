@@ -29,14 +29,16 @@ const DefaultSeedDisconnectWaitPeriod = 5 * time.Minute
 const DefaultMetricsNamespace = "cometbft"
 
 // DefaultPeerCheckPeriod is how often the seed re-verifies the addresses it
-// would serve. A selection holds at most maxGetSelection (250) addresses and a
-// dial costs at most 7s: 1s to connect (transport.go dialTimeout), then two
-// consecutive 3s handshake deadlines, one for the secret connection and one
-// for the node info exchange. A sweep of a full selection therefore takes
-// about 3m40 with the default worker count, comfortably inside this period.
+// would serve.
 //
-// The sweep draws that selection with the same bias the seed serves with, see
-// sweepRoutine; the ceiling is the same either way.
+// The two stacks do not pay the same price for one address that never
+// answers. On Cosmos a dial costs at most seven seconds, one to connect then
+// two consecutive three second handshake deadlines, one for the secret
+// connection and one for the node info exchange; a sequential sweep of a full
+// selection therefore takes about 29 minutes and an eight worker sweep about
+// 3m40, both inside this period. On gno.land the connect alone is three
+// seconds, so the same address costs nine, and this period holds well over
+// the sixty of the default outbound limit.
 const DefaultPeerCheckPeriod = 10 * time.Minute
 
 // DefaultPeerCheckWorkers is how many verification dials run in parallel.
@@ -171,8 +173,8 @@ func (config Config) Validate() error {
 	if config.MaxNumInboundPeers < 0 {
 		return fmt.Errorf("max_num_inbound_peers: must not be negative, got %d", config.MaxNumInboundPeers)
 	}
-	if config.MaxNumOutboundPeers < 0 {
-		return fmt.Errorf("max_num_outbound_peers: must not be negative, got %d", config.MaxNumOutboundPeers)
+	if config.MaxNumOutboundPeers <= 0 {
+		return fmt.Errorf("max_num_outbound_peers: must be positive, got %d", config.MaxNumOutboundPeers)
 	}
 	if config.MaxPacketMsgPayloadSize <= 0 {
 		return fmt.Errorf("max_packet_msg_payload_size: must be positive, got %d", config.MaxPacketMsgPayloadSize)

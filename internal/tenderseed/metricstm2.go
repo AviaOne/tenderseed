@@ -18,8 +18,15 @@ const (
 	resultFailed   = "failed"
 	resultAccepted = "accepted"
 	resultRejected = "rejected"
-	resultRetried  = "retried"
-	resultDropped  = "dropped"
+
+	// An answer from a peer this seed did not ask, and a request that came
+	// faster than minServeInterval allows. Both are things one peer does to
+	// this seed, and an operator acts on each differently: the first says a
+	// stranger is pushing addresses, the second that one is repeating.
+	resultUnsolicited = "unsolicited"
+	resultTooSoon     = "too_soon"
+	resultRetried     = "retried"
+	resultDropped     = "dropped"
 
 	// The two reasons an address the sweep selected was not tried. They are
 	// separate because they mean different things to an operator: connected
@@ -49,6 +56,8 @@ var seedTM2Outcomes = [][2]string{
 	{resultFailed, stageServe},
 	{resultAccepted, stageLearn},
 	{resultRejected, stageLearn},
+	{resultUnsolicited, stageLearn},
+	{resultTooSoon, stageServe},
 	{resultRetried, stageSweep},
 	{resultDropped, stageSweep},
 	{resultSkippedConnected, stageSweep},

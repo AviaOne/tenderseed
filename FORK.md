@@ -323,7 +323,8 @@ wait. Anything older than twice the cap goes regardless.
 |---|---|---|
 | `seed_disconnect_wait_period` | `5m` | judgement, checked at runtime, see 2.3 |
 | `peer_check_workers` | 8 | a selection returns at most 250 addresses and a dial costs at most 7 seconds, 1s to connect then two consecutive 3s handshake deadlines, so a sequential sweep takes about 29 minutes and an 8-worker sweep about 3m40 |
-| `peer_check_period` | `10m` | five times the minimum interval between crawls, and about 2.7 times the duration of one sweep. It also sets the window during which a successful verdict is trusted, see 3.6. `0` disables |
+| `peer_check_period` | `10m` | five times the minimum interval between crawls, and about 2.7 times the duration of one sweep. It also sets the window during which a successful verdict is trusted, see 3.6. `0` disables verification, and on TM2 the pacing of hand overs with it, see 6.4 |
+| `max_num_outbound_peers` | `60` | the upstream default. Refused at zero, which would leave a seed dialling nothing, verifying nothing and serving nothing, while logging normally |
 | `allow_duplicate_ip` | `true` | the value upstream hardcoded |
 | `metrics_listen_addr` | empty | disabled by default, so nothing changes for an existing user |
 | `metrics_namespace` | `cometbft` | the upstream default, so validator dashboards apply unchanged |
@@ -554,8 +555,19 @@ Nothing in that path ever closes a connection.
   restart. A public seed that kept the core's behaviour would hand out addresses
   nobody can dial.
 - **A sweep on `peer_check_period`.** Stale addresses are handed to the switch
-  rather than dialled directly, so one dialler keeps holding the outbound limit
-  and the duplicate-IP rule. One sweep hands over what the free outbound slots
+  rather than dialled directly, so one dialler keeps the duplicate-IP rule and
+  a single accounting. It is also, while it runs, the only thing that hands
+  addresses over at all: the switch reads its outbound limit once, when an
+  address is handed to it, and never again, and the queue it feeds is neither
+  bounded nor deduplicated, nothing empties it and nothing reports its depth.
+  Handing over from anywhere else therefore deposited work into a place with
+  no bottom, where the sweep's own addresses then waited behind it, were
+  marked as tried long before they were dialled, counted as failed, and
+  dropped although they were alive. So the sweep paces every hand over, and
+  what is learned in between is kept and dialled on the next pass. A zero
+  period runs no sweep and gives that pacing up with the verification, which
+  is what restoring the upstream behaviour means here.
+  One sweep hands over what the free outbound slots
   and the period can really take, oldest news first, and an attempt is recorded
   only for an address actually handed over: the switch silently skips one it is
   already connected to, and discards whatever exceeds its outbound limit, so
@@ -564,10 +576,27 @@ Nothing in that path ever closes a connection.
   the rotation follows from the order instead of being a mechanism of its own.
   Five consecutive failures evict an address. A success is trusted for three
   periods, so a sweep may miss once without emptying what the seed can answer.
+- **Bounds on what one peer may do.** Three, none of which this stack has and
+  all three of which the Cosmos side gets from its own core. A list of
+  addresses is taken only from a peer this seed asked, one request buying one
+  answer, because an answer nobody asked for is the single thing a stranger
+  controls whole: when it comes, how often, and what it carries. What one
+  answer may add is capped at what this seed itself serves, since the core
+  validates an answer without ever counting its entries. And a peer that asks
+  again immediately is not answered twice, a request being ten bytes where an
+  answer is thousands and a sort of the whole book under lock.
+  Below all three, the receive ceiling of the discovery channel is set far
+  under the core's: that ceiling is local to each side of a connection and
+  never compared in the handshake, and it is what decides how much work a
+  stranger can have this seed assemble, decode and resolve before any rule of
+  this reactor runs at all.
 - **Counters**, on the shape of the Cosmos ones: one series for the decisions, by
   outcome and by the stage that took them, one for the size of the book and of
   its servable part, every reachable pair published at zero so a share can be
-  read from the first scrape. Nothing upstream reports any of this.
+  read from the first scrape. Two of them report the bounds above, an answer
+  nobody asked for and a request that came too soon, because each tells an
+  operator something different about the peer doing it. Nothing upstream
+  reports any of this.
 
 ### 6.5 Two constraints found in the core, not chosen
 
@@ -631,7 +660,13 @@ Named here so that nothing above is read as covering it:
 
 - the memory cost of a TM2 seed holding many inbound connections at once;
 - behaviour at saturation, on either stack: no run has approached the inbound
-  ceiling;
+  ceiling. `allow_duplicate_ip` defaults to true here, where the core defaults
+  to false, so nothing stops one host from taking every inbound slot under
+  fabricated identities. The default is deliberate, a seed being where nodes
+  behind one address legitimately meet, and its cost at saturation is
+  unmeasured;
+- the depth of the switch's dial queue in production. Nothing exposes it, and
+  the pacing described in 6.4 is reasoned from the code rather than observed;
 - how the sweep behaves on a book far larger than the networks this stack has
   today, where the batch would be bounded by the period at every pass.
 
@@ -661,9 +696,11 @@ otherwise:
 7. the `TENDERSEED_CHAIN_ID` and `TENDERSEED_SEEDS` environment variables, with
    flags taking priority;
 8. **a `config.toml` written for a v1 or a v2 keeps working when only the binary
-   is replaced.** One exception, introduced in v3.0.0 and named in its release
-   notes: a configuration that enables the metrics endpoint while leaving the
-   namespace empty used to start and now refuses to.
+   is replaced.** Two exceptions, both introduced in v3.0.0 and named in its
+   release notes: a configuration that enables the metrics endpoint while
+   leaving the namespace empty used to start and now refuses to, and so does
+   one setting `max_num_outbound_peers` to zero, which used to start a seed
+   that could serve nothing and said so nowhere.
 
 ---
 

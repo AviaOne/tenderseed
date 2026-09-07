@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/gnolang/gno/tm2/pkg/amino"
@@ -27,6 +28,29 @@ import (
 // 250 is the selection size the Cosmos side of this binary already serves, so
 // both stacks hand out the same amount and the two can be compared.
 const maxAddressesServed = 250
+
+// maxAddressesLearned bounds what one answer may add to the book.
+//
+// Nothing on the wire bounds it: the core validates an answer without ever
+// counting its entries. The book has a ceiling, so filling it is enough to
+// push out what this seed had reached. The value is what this seed serves, so
+// two of these seeds talking to each other lose nothing.
+const maxAddressesLearned = maxAddressesServed
+
+// answerWindow is how long an answer may follow the request that asked for
+// it. Wide on purpose: too wide costs one stale answer taken, too narrow
+// costs a seed that learns nothing.
+const answerWindow = time.Minute
+
+// minServeInterval is the shortest gap between two answers served to the same
+// peer.
+//
+// A request is ten bytes and an answer is thousands, so a peer that repeats
+// gets this seed to spend its bandwidth, and a sort of the whole book under
+// lock, at whatever rate it likes. The Cosmos side has this bound from its
+// upstream reactor; this one had none. Legitimate peers ask on their own
+// crawl tick and never come close.
+const minServeInterval = time.Second
 
 // discoveryInterval is how often the seed asks one random peer for addresses.
 // It is the core's own interval: this reactor changes what a seed answers,
@@ -51,15 +75,23 @@ const maxConsecutiveFailures = 5
 
 // dialCost is what one address costs the switch, worst case.
 //
-// The switch dials one address at a time, in one loop, and a dead address is
-// paid in full: three seconds of TCP timeout before anything else is even
-// attempted. So a batch is not only limited by the slots available, it is
-// limited by how many addresses the period can hold at that price. This is a
-// deliberate under-estimate of the true worst case, which adds the two
-// handshake deadlines: over-estimating the cost only means a smaller batch and
-// a slower rotation, under-estimating it means marking attempts that never
-// happened, which is the defect this bound exists to prevent.
-const dialCost = 3 * time.Second
+// The switch dials one address at a time, in one loop, and an address that
+// never answers is paid in full: three seconds of dial context, then the two
+// handshake deadlines the transport sets once the socket is up, three seconds
+// each, neither of them covered by the dial context. Nine seconds, and a
+// batch is limited by how many of those the period can hold.
+//
+// It used to say three, describing the dial alone, and called that a
+// deliberate under-estimate in the same breath as it explained that
+// under-estimating marks attempts that never happened. Both halves could not
+// be true. Nothing was visibly wrong because the outbound limit, sixty by
+// default, was the binding term either way; raise that limit and the batch
+// grew past what the period could dial, so the tail of every pass was marked
+// before anything reached it, counted as failed, and evicted after five
+// passes. The cost is what makes the arithmetic honest at any limit, so it is
+// the true worst case now, and over-estimating it costs only a slower
+// rotation.
+const dialCost = 9 * time.Second
 
 // errSeedServed is the reason recorded when the seed closes a connection it
 // has finished answering. It is not a failure; it is the seed's whole purpose.
@@ -82,16 +114,29 @@ const (
 
 // seedChannel is the discovery channel descriptor.
 //
-// Every field repeats the core's, which is not a choice: the descriptors of a
-// connection come from the registered reactors on each side, and two nodes
-// that describe the same channel differently do not agree on its queue or its
-// message ceiling. The channel byte itself comes from the core package, so it
-// can never drift.
+// The channel byte comes from the core package, so it can never drift. The
+// rest is local to this side of a connection and does not have to match the
+// peer: each end applies its own ceiling to what it receives, and nothing in
+// the handshake compares them.
+//
+// The ceiling is the one field where repeating the core is wrong. Five
+// megabytes is what a full node sets for a channel that carries far more than
+// addresses; here it is the size of a message a stranger may have this seed
+// assemble, decode and validate before a single rule of this reactor runs,
+// and decoding an address resolves it when it carries a name rather than an
+// address. So a stranger sets the size of the work and picks the names looked
+// up, once per message, as often as it likes.
+//
+// This holds an answer, and an answer holds at most maxAddressesServed
+// addresses of about seventy bytes: tens of kilobytes. A quarter of a
+// megabyte leaves more than an order of magnitude of room and cuts what one
+// connection can pin by twenty. A peer that sends more has its connection
+// closed by the core, before this reactor sees anything.
 var seedChannel = &conn.ChannelDescriptor{
 	ID:                  discovery.Channel,
 	Priority:            1,
 	SendQueueCapacity:   20,
-	RecvMessageCapacity: 5242880,
+	RecvMessageCapacity: 262144,
 }
 
 // SeedReactorTM2 is the discovery reactor of a TM2 seed node.
@@ -138,6 +183,12 @@ type SeedReactorTM2 struct {
 	// metrics is nil when the endpoint is disabled.
 	metrics *seedTM2Metrics
 
+	// notes is what this seed remembers of each peer it talks to: when it
+	// last asked that peer for addresses, and when it last answered it.
+	// Both exist to bound what one peer can make this seed do.
+	notesMtx sync.Mutex
+	notes    map[p2ptypes.ID]*peerNotes
+
 	ctx      context.Context
 	cancelFn context.CancelFunc
 }
@@ -162,6 +213,7 @@ func NewSeedReactorTM2(
 		checkPeriod: checkPeriod,
 		maxOutbound: maxOutbound,
 		metrics:     metrics,
+		notes:       make(map[p2ptypes.ID]*peerNotes),
 		ctx:         ctx,
 		cancelFn:    cancelFn,
 	}
@@ -179,8 +231,24 @@ func (r *SeedReactorTM2) GetChannels() []*conn.ChannelDescriptor {
 
 // OnStart dials what the book already holds, then runs the crawl.
 func (r *SeedReactorTM2) OnStart() error {
-	if peers := r.book.GetPeers(); len(peers) > 0 {
-		r.logger.Info("dialing known addresses", "count", len(peers))
+	// Bounded like a sweep pass, and proven addresses first: a slot spent on
+	// one this seed has reached can prove it again, where a slot spent on
+	// hearsay may prove nothing. The whole book used to go at once, which the
+	// switch takes whole, having no bound of its own beyond the outbound
+	// limit it reads once at hand over.
+	budget := r.sweepBudget()
+
+	peers := r.book.FreshBatch(0, budget)
+	if len(peers) == 0 {
+		peers = r.book.GetPeers()
+	}
+
+	if len(peers) > budget {
+		peers = peers[:budget]
+	}
+
+	if len(peers) > 0 {
+		r.logger.Info("dialing known addresses", "count", len(peers), "book", r.book.Size())
 		r.Switch.DialPeers(peers...)
 	}
 
@@ -209,6 +277,11 @@ func (r *SeedReactorTM2) OnStart() error {
 func (r *SeedReactorTM2) sweep() {
 	ticker := time.NewTicker(r.checkPeriod)
 	defer ticker.Stop()
+
+	// One pass before the first tick. The sweep is the only thing that hands
+	// addresses to the switch now, so waiting a whole period would leave
+	// everything learned during it undialled.
+	r.sweepOnce()
 
 	for {
 		select {
@@ -428,12 +501,18 @@ func (r *SeedReactorTM2) AddPeer(peer p2p.PeerConn) {
 	go r.request(peer)
 }
 
-// RemovePeer is required by the reactor interface and has nothing to do.
+// RemovePeer forgets what this seed remembered of a peer that has gone.
 //
-// It used to cancel a pending hang up. There is no longer one to cancel: the
-// cycle reads the peer set as it is, so a peer that has left is simply not
-// there any more.
-func (r *SeedReactorTM2) RemovePeer(peer p2p.PeerConn, reason any) {}
+// It no longer cancels a hang up: the cycle reads the peer set as it is, so a
+// peer that has left is simply not there any more. What it clears is the
+// pending request, which a peer must not be able to answer after leaving and
+// coming back.
+func (r *SeedReactorTM2) RemovePeer(peer p2p.PeerConn, reason any) {
+	r.notesMtx.Lock()
+	defer r.notesMtx.Unlock()
+
+	delete(r.notes, peer.ID())
+}
 
 // request asks a peer for its addresses.
 func (r *SeedReactorTM2) request(peer p2p.PeerConn) {
@@ -449,7 +528,85 @@ func (r *SeedReactorTM2) request(peer p2p.PeerConn) {
 	// seed has no reason to hold a goroutine for.
 	if !peer.TrySend(discovery.Channel, payload) {
 		r.logger.Debug("unable to send discovery request", "peer", peer.ID())
+
+		return
 	}
+
+	r.noteRequest(peer.ID())
+}
+
+// peerNotes is what this seed remembers of one peer.
+type peerNotes struct {
+	asked  time.Time
+	served time.Time
+}
+
+// noteRequest records that this peer was asked, and forgets the peers whose
+// last exchange is older than the window, so the table cannot grow on its own.
+func (r *SeedReactorTM2) noteRequest(id p2ptypes.ID) {
+	now := time.Now()
+
+	r.notesMtx.Lock()
+	defer r.notesMtx.Unlock()
+
+	for peer, notes := range r.notes {
+		if now.Sub(notes.asked) > answerWindow && now.Sub(notes.served) > answerWindow {
+			delete(r.notes, peer)
+		}
+	}
+
+	notes, found := r.notes[id]
+	if !found {
+		notes = &peerNotes{}
+		r.notes[id] = notes
+	}
+
+	notes.asked = now
+}
+
+// answersOurRequest reports whether an answer from this peer follows a request
+// this seed sent, and consumes that request: one request buys one answer.
+//
+// This is the control the Cosmos side gets from its upstream reactor, which
+// refuses an address list nobody asked for. This stack has no such refusal,
+// and without one an answer is the single thing a stranger controls whole:
+// when it comes, how often, and what it carries.
+func (r *SeedReactorTM2) answersOurRequest(id p2ptypes.ID) bool {
+	r.notesMtx.Lock()
+	defer r.notesMtx.Unlock()
+
+	notes, found := r.notes[id]
+	if !found || notes.asked.IsZero() {
+		return false
+	}
+
+	asked := notes.asked
+	notes.asked = time.Time{}
+
+	return time.Since(asked) <= answerWindow
+}
+
+// mayServe reports whether this peer may be answered now, and records the
+// answer when it may.
+func (r *SeedReactorTM2) mayServe(id p2ptypes.ID) bool {
+	now := time.Now()
+
+	r.notesMtx.Lock()
+	defer r.notesMtx.Unlock()
+
+	notes, found := r.notes[id]
+	if !found {
+		notes = &peerNotes{}
+		r.notes[id] = notes
+	}
+
+	if !notes.served.IsZero() && now.Sub(notes.served) < minServeInterval {
+		return false
+	}
+
+	notes.served = now
+
+	return true
 }
 
 // Receive handles the two discovery messages.
@@ -468,10 +625,24 @@ func (r *SeedReactorTM2) Receive(chID byte, peer p2p.PeerConn, msgBytes []byte) 
 
 	switch msg := msg.(type) {
 	case *discovery.Request:
+		if !r.mayServe(peer.ID()) {
+			r.logger.Debug("ignoring a request that came too soon", "peer", peer.ID())
+			r.metrics.observe(resultTooSoon, stageServe)
+
+			return
+		}
+
 		if err := r.serve(peer); err != nil {
 			r.logger.Warn("unable to answer discovery request", "peer", peer.ID(), "err", err)
 		}
 	case *discovery.Response:
+		if !r.answersOurRequest(peer.ID()) {
+			r.logger.Debug("ignoring addresses nobody asked for", "peer", peer.ID())
+			r.metrics.observe(resultUnsolicited, stageLearn)
+
+			return
+		}
+
 		r.learn(msg.Peers)
 	default:
 		r.logger.Warn("invalid discovery message received", "peer", peer.ID())
@@ -599,24 +770,49 @@ func (r *SeedReactorTM2) acceptable(addr *p2ptypes.NetAddress) bool {
 // unroutable address kept in the book would be dialled, would occupy an
 // outbound slot, and would come back at every restart, having never been
 // servable in the first place.
+// What arrives past maxAddressesLearned is counted as rejected, which is what
+// it is: announced and not kept.
+//
+// Nothing is handed to the switch here while the sweep runs, and that is the
+// point. The dial queue is neither bounded nor deduplicated, nothing empties
+// it and nothing reports its depth, so every hand over outside a budget was a
+// deposit into a place with no bottom: the sweep's own addresses then waited
+// behind it, were marked as tried long before they were dialled, counted as
+// failed, and dropped although they were alive. The sweep hands over instead,
+// because it is the only thing that counts what a period can dial. What is
+// learned here is kept, and dialled on the next pass.
+//
+// Unless there is no next pass. A zero peer_check_period runs no sweep, and
+// then nothing at all would ever be dialled after start up: this path would
+// keep a book it never tries. So it hands over as the core does, unbounded,
+// which is precisely the upstream behaviour that setting asks for.
 func (r *SeedReactorTM2) learn(addrs []*p2ptypes.NetAddress) {
-	kept := make([]*p2ptypes.NetAddress, 0, len(addrs))
+	kept := make([]*p2ptypes.NetAddress, 0, min(len(addrs), maxAddressesLearned))
+	rejected := 0
 
 	for _, addr := range addrs {
-		if r.acceptable(addr) {
-			kept = append(kept, addr)
+		if len(kept) == maxAddressesLearned || !r.acceptable(addr) {
+			rejected++
+
+			continue
 		}
+
+		kept = append(kept, addr)
 	}
 
 	r.metrics.observeMany(resultAccepted, stageLearn, len(kept))
-	r.metrics.observeMany(resultRejected, stageLearn, len(addrs)-len(kept))
+	r.metrics.observeMany(resultRejected, stageLearn, rejected)
 
 	if len(kept) == 0 {
 		return
 	}
 
 	r.book.AddPeers(kept...)
-	r.Switch.DialPeers(kept...)
+
+	if r.checkPeriod <= 0 {
+		r.Switch.DialPeers(kept...)
+	}
+
 	r.metrics.setBook(r.book.Size(), len(r.book.FreshBatch(r.freshness(), r.servableCeiling())))
 }
 

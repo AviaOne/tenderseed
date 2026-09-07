@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gnolang/gno/tm2/pkg/amino"
 	"github.com/gnolang/gno/tm2/pkg/p2p"
 	"github.com/gnolang/gno/tm2/pkg/p2p/conn"
+	"github.com/gnolang/gno/tm2/pkg/p2p/discovery"
 	"github.com/gnolang/gno/tm2/pkg/p2p/events"
 	p2ptypes "github.com/gnolang/gno/tm2/pkg/p2p/types"
 )
@@ -469,4 +471,180 @@ func TestCycle(t *testing.T) {
 			t.Fatalf("interval is %s, expected the one second floor", got)
 		}
 	})
+}
+
+// TestOnePeerIsBounded is the regression test of what one peer could do: empty
+// what the seed serves with a single answer, and fill a queue nothing bounds.
+func TestOnePeerIsBounded(t *testing.T) {
+	t.Parallel()
+
+	answer := func(t *testing.T, count int) []byte {
+		t.Helper()
+
+		addrs := make([]*p2ptypes.NetAddress, 0, count)
+		for n := range count {
+			addrs = append(addrs, bookAddr(t, 1000+n))
+		}
+
+		payload, err := amino.MarshalAny(&discovery.Response{Peers: addrs})
+		if err != nil {
+			t.Fatalf("unable to marshal the answer: %v", err)
+		}
+
+		return payload
+	}
+
+	request := func(t *testing.T) []byte {
+		t.Helper()
+
+		payload, err := amino.MarshalAny(&discovery.Request{})
+		if err != nil {
+			t.Fatalf("unable to marshal the request: %v", err)
+		}
+
+		return payload
+	}
+
+	t.Run("an answer nobody asked for is ignored", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, sw := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 900).ID, accepts: true}
+
+		reactor.Receive(discovery.Channel, peer, answer(t, 20))
+
+		if book.Size() != 0 {
+			t.Fatalf("the book took %d addresses nobody asked for", book.Size())
+		}
+
+		if len(sw.dialed) != 0 {
+			t.Fatal("an answer nobody asked for reached the switch")
+		}
+	})
+
+	t.Run("an answer to our own request is taken", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, _ := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 901).ID, accepts: true}
+
+		reactor.noteRequest(peer.ID())
+		reactor.Receive(discovery.Channel, peer, answer(t, 20))
+
+		if book.Size() != 20 {
+			t.Fatalf("the book took %d addresses, expected 20", book.Size())
+		}
+	})
+
+	t.Run("one request buys one answer", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, _ := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 902).ID, accepts: true}
+
+		reactor.noteRequest(peer.ID())
+		reactor.Receive(discovery.Channel, peer, answer(t, 5))
+		reactor.Receive(discovery.Channel, peer, answer(t, 20))
+
+		if book.Size() != 5 {
+			t.Fatalf("the book took %d addresses, expected the first answer alone", book.Size())
+		}
+	})
+
+	t.Run("what one answer may add is capped", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, _ := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 903).ID, accepts: true}
+
+		reactor.noteRequest(peer.ID())
+		reactor.Receive(discovery.Channel, peer, answer(t, maxAddressesLearned+50))
+
+		if book.Size() != maxAddressesLearned {
+			t.Fatalf("the book took %d addresses, expected %d", book.Size(), maxAddressesLearned)
+		}
+	})
+
+	t.Run("learning hands nothing to the switch", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, sw := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 904).ID, accepts: true}
+
+		reactor.noteRequest(peer.ID())
+		reactor.Receive(discovery.Channel, peer, answer(t, 40))
+
+		if book.Size() != 40 {
+			t.Fatalf("the book took %d addresses, expected all 40 kept", book.Size())
+		}
+
+		if len(sw.dialed) != 0 {
+			t.Fatalf("learning handed %d batches to the switch, expected none", len(sw.dialed))
+		}
+	})
+
+	t.Run("a peer that has left cannot answer afterwards", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, _ := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 905).ID, accepts: true}
+
+		reactor.noteRequest(peer.ID())
+		reactor.RemovePeer(peer, nil)
+		reactor.Receive(discovery.Channel, peer, answer(t, 10))
+
+		if book.Size() != 0 {
+			t.Fatalf("the book took %d addresses after the peer had left", book.Size())
+		}
+	})
+
+	t.Run("requests coming too fast are not all answered", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, _ := newSweepFixture(t, time.Hour, 60)
+		book.AddPeers(bookAddr(t, 906))
+		book.MarkSuccess(bookAddr(t, 906))
+
+		peer := &fakePeer{id: bookAddr(t, 907).ID, accepts: true}
+		payload := request(t)
+
+		for range 5 {
+			reactor.Receive(discovery.Channel, peer, payload)
+		}
+
+		if peer.sent != 1 {
+			t.Fatalf("the seed answered %d times in a row, expected 1", peer.sent)
+		}
+	})
+}
+
+// TestLearnDialsWhenTheSweepIsOff covers what a zero peer_check_period asks
+// for: no verification, and the upstream behaviour back, which means learning
+// hands addresses over because nothing else will.
+func TestLearnDialsWhenTheSweepIsOff(t *testing.T) {
+	t.Parallel()
+
+	addrs := make([]*p2ptypes.NetAddress, 0, 4)
+	for n := range 4 {
+		addrs = append(addrs, bookAddr(t, 1200+n))
+	}
+
+	payload, err := amino.MarshalAny(&discovery.Response{Peers: addrs})
+	if err != nil {
+		t.Fatalf("unable to marshal the answer: %v", err)
+	}
+
+	reactor, book, sw := newSweepFixture(t, 0, 60)
+	peer := &fakePeer{id: bookAddr(t, 1210).ID, accepts: true}
+
+	reactor.noteRequest(peer.ID())
+	reactor.Receive(discovery.Channel, peer, payload)
+
+	if book.Size() != 4 {
+		t.Fatalf("the book took %d addresses, expected 4", book.Size())
+	}
+
+	if got := len(sw.lastBatch()); got != 4 {
+		t.Fatalf("the switch was handed %d addresses, expected 4", got)
+	}
 }
