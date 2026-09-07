@@ -142,6 +142,56 @@ func TestDisconnectWaitPeriod(t *testing.T) {
 	}
 }
 
+func TestConfigRefusesWhatFailsElsewhere(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an inbound limit of zero is refused", func(t *testing.T) {
+		t.Parallel()
+
+		config := DefaultConfig()
+		config.MaxNumInboundPeers = 0
+
+		if err := config.Validate(); err == nil {
+			t.Fatal("an inbound limit of zero was accepted")
+		}
+	})
+
+	t.Run("a moniker that is not printable ASCII is refused", func(t *testing.T) {
+		t.Parallel()
+
+		for _, moniker := range []string{"seed\u00e9", "seed\tname", "   "} {
+			config := DefaultConfig()
+			config.Moniker = moniker
+
+			if err := config.Validate(); err == nil {
+				t.Fatalf("%q was accepted as a moniker", moniker)
+			}
+		}
+	})
+
+	t.Run("an empty moniker is left alone", func(t *testing.T) {
+		t.Parallel()
+
+		config := DefaultConfig()
+		config.Moniker = ""
+
+		if err := config.Validate(); err != nil {
+			t.Fatalf("an empty moniker was refused: %v", err)
+		}
+	})
+
+	t.Run("a chain identifier that is not printable ASCII is refused", func(t *testing.T) {
+		t.Parallel()
+
+		config := DefaultConfig()
+		config.ChainID = "cha\u00eene-1"
+
+		if err := config.Validate(); err == nil {
+			t.Fatal("a non ASCII chain identifier was accepted")
+		}
+	})
+}
+
 func TestValidateRejectsNegativeLimits(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

@@ -54,14 +54,34 @@ type bookRecord struct {
 	lastOK   time.Time
 }
 
-// lastNews is the later of the last success and the last attempt: the last
-// time this seed learned anything at all about the address.
+// lastNews is the latest of the three dates this book keeps: the last
+// success, the last attempt, and the last mention. It is the last time this
+// seed learned anything at all about the address, whoever it learned it from.
+//
+// The mention belongs here, and leaving it out was the whole of a critical
+// fault. An address that had never been tried had neither a success nor an
+// attempt, so its news was the zero time and it came in front of every proven
+// address waiting to be proven again. One peer answering with invented
+// addresses therefore took the entire sweep budget for as long as it liked,
+// and the proven ones aged out of the served set while the book still held
+// them: a seed that listens, accepts and answers, and answers nothing.
+//
+// That is exactly what the batch order set out to avoid, and its own comment
+// warned against: ordering on the last success alone would put an address that
+// never answered in front of everything for ever. The key chosen to avoid it
+// had the same hole one step earlier, and the code contradicted its comment.
 func (r *bookRecord) lastNews() time.Time {
-	if r.lastTry.After(r.lastOK) {
-		return r.lastTry
+	latest := r.lastSeen
+
+	if r.lastTry.After(latest) {
+		latest = r.lastTry
 	}
 
-	return r.lastOK
+	if r.lastOK.After(latest) {
+		latest = r.lastOK
+	}
+
+	return latest
 }
 
 // SeedBook is the address book of a TM2 seed: the addresses it knows and what
@@ -324,28 +344,54 @@ func (b *SeedBook) DropFailing(limit int) int {
 	return dropped
 }
 
-// StaleBatch returns at most limit addresses worth trying again, the ones
-// whose last news is oldest first. A limit of zero returns all of them.
+// StaleProvenBatch returns at most limit addresses this seed has reached at
+// least once and whose proof has expired, oldest news first.
 //
-// The order is the point. The book is a map, so an unsorted batch is drawn at
-// random, and the tail of a large book can go unchecked for a long time.
-// Ordering on the last news makes being tried send an address to the back of
-// the queue, so the rotation is a consequence of the order rather than a
-// mechanism of its own. Ordering on the last success alone would be wrong: an
-// address that never answered has no success at all, and would pass in front
-// of everything for ever.
-func (b *SeedBook) StaleBatch(window time.Duration, limit int) []*p2ptypes.NetAddress {
+// It exists apart from the exploration set because the two compete for one
+// budget and they are not worth the same. Renewing an address this seed has
+// reached keeps a promise it already makes; trying one it was merely told
+// about may prove nothing. When they share a queue the second always wins,
+// having no news at all, and the seed stops renewing what it serves.
+func (b *SeedBook) StaleProvenBatch(window time.Duration, limit int) []*p2ptypes.NetAddress {
 	cutoff := time.Now().Add(-window)
 
 	return b.collectSorted(
 		func(record *bookRecord) bool {
-			return record.lastOK.IsZero() || record.lastOK.Before(cutoff)
+			return !record.lastOK.IsZero() && record.lastOK.Before(cutoff)
 		},
 		func(left, right *bookRecord) bool {
 			return left.lastNews().Before(right.lastNews())
 		},
 		limit,
 	)
+}
+
+// StaleUnprovenBatch returns at most limit addresses this seed has never
+// reached, oldest news first.
+func (b *SeedBook) StaleUnprovenBatch(limit int) []*p2ptypes.NetAddress {
+	return b.collectSorted(
+		func(record *bookRecord) bool {
+			return record.lastOK.IsZero()
+		},
+		func(left, right *bookRecord) bool {
+			return left.lastNews().Before(right.lastNews())
+		},
+		limit,
+	)
+}
+
+// Knows reports whether the book already holds this address.
+func (b *SeedBook) Knows(addr *p2ptypes.NetAddress) bool {
+	if addr == nil {
+		return false
+	}
+
+	b.mtx.RLock()
+	defer b.mtx.RUnlock()
+
+	_, found := b.peers[addr.String()]
+
+	return found
 }
 
 // FreshBatch returns at most limit addresses that answered within the window,

@@ -243,6 +243,27 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 		return nil, err
 	}
 
+	// A period shorter than one dial cannot prove a single address before the
+	// next pass starts, and freshness lasts three of those periods, so every
+	// proof expires between two attempts to renew it: the seed dials nothing
+	// and serves nothing, silently. Zero is a different thing and stays
+	// supported, being the documented way back to the upstream behaviour.
+	//
+	// Refused here rather than in the common validation, because the
+	// threshold is a TM2 constant and a five second period is merely odd on
+	// the Cosmos stack, where it works. Refusing it for both would break a
+	// configuration file that starts today, which the compatibility contract
+	// forbids.
+	if checkPeriod > 0 && checkPeriod < dialCost {
+		s.closeTransport()
+
+		return nil, fmt.Errorf(
+			"peer_check_period: on gno.land it must be zero or at least %s, got %s",
+			dialCost,
+			checkPeriod,
+		)
+	}
+
 	var metrics *seedTM2Metrics
 
 	// The counters share the fate of the endpoint, as they do on the Cosmos

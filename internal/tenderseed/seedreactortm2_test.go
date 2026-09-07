@@ -210,7 +210,7 @@ func TestSweepMarksOnlyWhatItHandsOver(t *testing.T) {
 
 		// Marked addresses are the ones the next batch will not start with,
 		// since being tried is news and news sends an address to the back.
-		next := book.StaleBatch(reactor.freshness(), len(handed))
+		next := book.StaleUnprovenBatch(len(handed))
 
 		for _, before := range handed {
 			for _, after := range next {
@@ -353,8 +353,14 @@ type fakePeer struct {
 	id       p2ptypes.ID
 	duration time.Duration
 	accepts  bool
+	outbound bool
 	sent     int
+	flushed  int
 }
+
+func (p *fakePeer) IsOutbound() bool { return p.outbound }
+
+func (p *fakePeer) FlushStop() { p.flushed++ }
 
 func (p *fakePeer) ID() p2ptypes.ID { return p.id }
 
@@ -551,17 +557,25 @@ func TestOnePeerIsBounded(t *testing.T) {
 		}
 	})
 
-	t.Run("what one answer may add is capped", func(t *testing.T) {
+	t.Run("what one answer may add is capped by what a period can prove", func(t *testing.T) {
 		t.Parallel()
 
+		// maxAddressesLearned still bounds one message, but it is no longer
+		// the term that bites. What an answer may have this seed take in is
+		// rated against what one period of verification is able to dial, so a
+		// peer cannot decide what the sweep spends its budget on.
 		reactor, book, _ := newSweepFixture(t, time.Hour, 60)
 		peer := &fakePeer{id: bookAddr(t, 903).ID, accepts: true}
 
 		reactor.noteRequest(peer.ID())
 		reactor.Receive(discovery.Channel, peer, answer(t, maxAddressesLearned+50))
 
-		if book.Size() != maxAddressesLearned {
-			t.Fatalf("the book took %d addresses, expected %d", book.Size(), maxAddressesLearned)
+		if got, want := book.Size(), reactor.provableBatch(); got != want {
+			t.Fatalf("the book took %d addresses, expected %d", got, want)
+		}
+
+		if reactor.provableBatch() >= maxAddressesLearned {
+			t.Fatal("this fixture no longer makes the allowance the binding term")
 		}
 	})
 
@@ -616,6 +630,269 @@ func TestOnePeerIsBounded(t *testing.T) {
 			t.Fatalf("the seed answered %d times in a row, expected 1", peer.sent)
 		}
 	})
+}
+
+// TestImmediateHangUpFlushes covers the answer that was queued and thrown away
+// by the close that followed it, while being counted as served.
+func TestImmediateHangUpFlushes(t *testing.T) {
+	t.Parallel()
+
+	reactor, book, sw := newSweepFixture(t, time.Hour, 60)
+	reactor.wait = 0
+
+	served := bookAddr(t, 1400)
+	book.AddPeers(served)
+	book.MarkSuccess(served)
+
+	peer := &fakePeer{id: bookAddr(t, 1401).ID, accepts: true}
+
+	if err := reactor.serve(peer); err != nil {
+		t.Fatalf("unable to serve: %v", err)
+	}
+
+	if peer.flushed != 1 {
+		t.Fatalf("the peer was flushed %d times, expected once before the close", peer.flushed)
+	}
+
+	if len(sw.stopped) != 1 {
+		t.Fatalf("%d peers were stopped, expected one", len(sw.stopped))
+	}
+}
+
+// TestStartDialsTheWholeBookWithoutASweep covers what a zero peer_check_period
+// asks for: the upstream behaviour, which dials the book at start up. Read as
+// a budget, zero left a seed that dialled nothing at all.
+func TestStartDialsTheWholeBookWithoutASweep(t *testing.T) {
+	t.Parallel()
+
+	reactor, book, sw := newSweepFixture(t, 0, 60)
+
+	for n := range 4 {
+		book.AddPeers(bookAddr(t, 1410+n))
+	}
+
+	if err := reactor.OnStart(); err != nil {
+		t.Fatalf("unable to start: %v", err)
+	}
+
+	defer reactor.OnStop()
+
+	if got := len(sw.lastBatch()); got != 4 {
+		t.Fatalf("the switch was handed %d addresses, expected the whole book", got)
+	}
+}
+
+// TestRequestIsNotedBeforeItIsSent covers the window an answer could fall into.
+func TestRequestIsNotedBeforeItIsSent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a request that fails to leave is taken back", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, _, _ := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 1420).ID, accepts: false}
+
+		reactor.request(peer)
+
+		if reactor.answersOurRequest(peer.ID()) {
+			t.Fatal("a request that never left bought an answer")
+		}
+	})
+
+	t.Run("a request that left buys one answer", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, _, _ := newSweepFixture(t, time.Hour, 60)
+		peer := &fakePeer{id: bookAddr(t, 1421).ID, accepts: true}
+
+		reactor.request(peer)
+
+		if !reactor.answersOurRequest(peer.ID()) {
+			t.Fatal("a request that left did not buy an answer")
+		}
+	})
+}
+
+// TestRenewalComesBeforeExploration is the regression test of the critical
+// defect: a peer that answers with addresses nobody can reach used to take the
+// whole sweep budget, so the addresses this seed had proven were never proven
+// again and the served set emptied while the book still held them.
+func TestRenewalComesBeforeExploration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an expired proof is renewed before hearsay is explored", func(t *testing.T) {
+		t.Parallel()
+
+		// Two dials fit in this period, and there is far more hearsay than
+		// that: without the two classes the proven address never comes up.
+		reactor, book, sw := newSweepFixture(t, 2*dialCost, 60)
+
+		proven := bookAddr(t, 300)
+		book.AddPeers(proven)
+		book.MarkSuccess(proven)
+		book.peers[proven.String()].lastOK = time.Now().Add(-time.Hour)
+
+		for n := range 50 {
+			book.AddPeers(bookAddr(t, 310+n))
+		}
+
+		reactor.sweepOnce()
+
+		batch := sw.lastBatch()
+		if len(batch) != 2 {
+			t.Fatalf("the switch was handed %d addresses, expected 2", len(batch))
+		}
+
+		if batch[0].ID != proven.ID {
+			t.Fatalf("the batch starts with %s, expected the expired proof", batch[0])
+		}
+	})
+
+	t.Run("continuous injection does not empty the served set", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, sw := newSweepFixture(t, 10*dialCost, 60)
+
+		// One address this seed has reached and keeps reaching.
+		proven := bookAddr(t, 400)
+		book.AddPeers(proven)
+		book.MarkSuccess(proven)
+
+		for pass := range 6 {
+			// The book is filled directly, so this test measures the two
+			// classes alone: the allowance would otherwise stop the flood
+			// before the sweep ever saw it, and both are needed.
+			for n := range 200 {
+				book.AddPeers(bookAddr(t, 1000+pass*200+n))
+			}
+
+			// The proof expires, so the sweep has to renew it.
+			book.peers[proven.String()].lastOK = time.Now().Add(-time.Hour)
+
+			reactor.sweepOnce()
+
+			// Whatever the switch was handed is dialled: the proven address
+			// answers, the invented ones do not.
+			for _, addr := range sw.lastBatch() {
+				if addr.ID == proven.ID {
+					book.MarkSuccess(addr)
+				}
+			}
+		}
+
+		if len(book.Fresh(reactor.freshness())) == 0 {
+			t.Fatal("the served set emptied under injection")
+		}
+
+		if !book.Knows(proven) {
+			t.Fatal("the proven address left the book under injection")
+		}
+	})
+}
+
+// TestExplorationAllowance pins what one peer may make this seed take in.
+func TestExplorationAllowance(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a peer may not name more than a period can prove", func(t *testing.T) {
+		t.Parallel()
+
+		// Three dials fit in this period, so three unknown addresses do too.
+		reactor, book, _ := newSweepFixture(t, 3*dialCost, 60)
+
+		peer := bookAddr(t, 500).ID
+
+		flood := make([]*p2ptypes.NetAddress, 0, 20)
+		for n := range 20 {
+			flood = append(flood, bookAddr(t, 510+n))
+		}
+
+		reactor.learn(peer, flood)
+
+		if got := book.Size(); got != 3 {
+			t.Fatalf("the book took %d addresses, expected the 3 a period can prove", got)
+		}
+
+		// A second answer in the same window adds nothing more.
+		reactor.learn(peer, flood)
+
+		if got := book.Size(); got != 3 {
+			t.Fatalf("the book took %d addresses over two answers, expected 3", got)
+		}
+	})
+
+	t.Run("an address the book already holds costs no allowance", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, _ := newSweepFixture(t, dialCost, 60)
+
+		known := bookAddr(t, 600)
+		book.AddPeers(known)
+
+		peer := bookAddr(t, 601).ID
+
+		// One known address, repeated, never spends the allowance.
+		for range 5 {
+			reactor.learn(peer, []*p2ptypes.NetAddress{known})
+		}
+
+		if got := book.Size(); got != 1 {
+			t.Fatalf("the book holds %d addresses, expected 1", got)
+		}
+
+		// The allowance is therefore still whole for a new one.
+		reactor.learn(peer, []*p2ptypes.NetAddress{bookAddr(t, 602)})
+
+		if got := book.Size(); got != 2 {
+			t.Fatalf("the book holds %d addresses, expected the new one taken", got)
+		}
+	})
+
+	t.Run("a silent peer does not get a fresh allowance by waiting", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, _, _ := newSweepFixture(t, dialCost, 60)
+
+		peer := bookAddr(t, 700).ID
+
+		reactor.learn(peer, []*p2ptypes.NetAddress{bookAddr(t, 701)})
+
+		// The purge runs on every request this seed sends out. It must not
+		// drop an entry whose exploration window is still open.
+		reactor.noteRequest(bookAddr(t, 702).ID)
+
+		reactor.notesMtx.Lock()
+		notes, found := reactor.notes[peer]
+		reactor.notesMtx.Unlock()
+
+		if !found {
+			t.Fatal("the peer's entry was purged while its window was open")
+		}
+
+		if notes.learned != 1 {
+			t.Fatalf("the peer's count is %d, expected 1", notes.learned)
+		}
+	})
+}
+
+// TestCrawlAsksOutboundPeersOnly covers the cost of the attack rather than the
+// attack itself: what an inbound peer says is worth what it costs to become
+// one.
+func TestCrawlAsksOutboundPeersOnly(t *testing.T) {
+	t.Parallel()
+
+	inbound := &fakePeer{id: bookAddr(t, 800).ID, accepts: true}
+	outbound := &fakePeer{id: bookAddr(t, 801).ID, accepts: true, outbound: true}
+
+	kept := outboundOnly([]p2p.PeerConn{inbound, outbound, nil})
+
+	if len(kept) != 1 {
+		t.Fatalf("%d peers kept, expected the outbound one alone", len(kept))
+	}
+
+	if kept[0].ID() != outbound.ID() {
+		t.Fatalf("kept %s, expected the outbound peer", kept[0].ID())
+	}
 }
 
 // TestLearnDialsWhenTheSweepIsOff covers what a zero peer_check_period asks

@@ -170,8 +170,13 @@ func (config Config) Validate() error {
 	if _, err := config.SeedStack(); err != nil {
 		return err
 	}
-	if config.MaxNumInboundPeers < 0 {
-		return fmt.Errorf("max_num_inbound_peers: must not be negative, got %d", config.MaxNumInboundPeers)
+	// Zero accepts no inbound peer at all, on either stack: both accept
+	// loops compare the count they hold against this value before taking a
+	// connection. A seed that refuses everyone is a seed that serves nobody,
+	// and it would say nothing about it, so it is refused here rather than
+	// left to be discovered by an operator whose seed nobody can reach.
+	if config.MaxNumInboundPeers <= 0 {
+		return fmt.Errorf("max_num_inbound_peers: must be positive, got %d", config.MaxNumInboundPeers)
 	}
 	if config.MaxNumOutboundPeers <= 0 {
 		return fmt.Errorf("max_num_outbound_peers: must be positive, got %d", config.MaxNumOutboundPeers)
@@ -187,7 +192,38 @@ func (config Config) Validate() error {
 	if config.PeerCheckWorkers < 0 {
 		return fmt.Errorf("peer_check_workers: must not be negative, got %d", config.PeerCheckWorkers)
 	}
+	// Both stacks refuse a node info whose moniker is not printable ASCII,
+	// and both refuse it at the far end of a handshake. Refused there, an
+	// operator sees connections that never complete and nothing naming the
+	// cause; refused here, they see the key that is wrong before the seed
+	// starts. An empty moniker is not checked: it is replaced by one built
+	// from the chain identifier, which is why that one is checked too.
+	if config.Moniker != "" && !isPrintableASCII(config.Moniker) {
+		return fmt.Errorf("moniker: must be printable ASCII, got %q", config.Moniker)
+	}
+	if config.ChainID != "" && !isPrintableASCII(config.ChainID) {
+		return fmt.Errorf("chain_id: must be printable ASCII, got %q", config.ChainID)
+	}
 	return nil
+}
+
+// isPrintableASCII reports whether every byte is printable ASCII and the value
+// holds something other than spaces. It is the test both cores apply to a
+// moniker, written here because this file belongs to neither stack.
+func isPrintableASCII(value string) bool {
+	trimmed := false
+
+	for _, char := range []byte(value) {
+		if char < 32 || char > 126 {
+			return false
+		}
+
+		if char != 32 {
+			trimmed = true
+		}
+	}
+
+	return trimmed
 }
 
 // LoadOrGenConfig loads a seed config from file if the file exists

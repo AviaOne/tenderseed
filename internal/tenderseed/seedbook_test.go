@@ -695,7 +695,7 @@ func TestSeedBookBatches(t *testing.T) {
 		book.MarkAttempt(third)
 		book.MarkAttempt(second)
 
-		batch := book.StaleBatch(time.Minute, 0)
+		batch := book.StaleUnprovenBatch(0)
 		if len(batch) != 3 {
 			t.Fatalf("batch holds %d addresses, expected 3", len(batch))
 		}
@@ -709,6 +709,79 @@ func TestSeedBookBatches(t *testing.T) {
 		}
 	})
 
+	t.Run("a mention is news, so hearsay does not overtake a proven address", func(t *testing.T) {
+		t.Parallel()
+
+		// The regression test of the critical defect. A proven address whose
+		// proof has expired must come before an address nobody has ever
+		// reached, however recently it was mentioned. Ordering on the success
+		// and the attempt alone gave the never tried one the zero time, so it
+		// came first for ever and the sweep never renewed anything.
+		book, _ := newBookForTest(t)
+
+		proven, hearsay := bookAddr(t, 60), bookAddr(t, 61)
+
+		book.AddPeers(proven)
+		book.MarkSuccess(proven)
+		book.peers[proven.String()].lastOK = time.Now().Add(-time.Hour)
+		book.peers[proven.String()].lastTry = time.Now().Add(-time.Hour)
+		book.peers[proven.String()].lastSeen = time.Now().Add(-time.Hour)
+
+		book.AddPeers(hearsay)
+
+		batch := book.StaleUnprovenBatch(0)
+		if len(batch) != 1 || batch[0].String() != hearsay.String() {
+			t.Fatalf("the unproven batch holds %d addresses, expected the hearsay one", len(batch))
+		}
+
+		// Inside one class the order has to follow the mention too: an
+		// address named an hour ago comes before one named a moment ago,
+		// which is what including lastSeen in the news buys.
+		recent := bookAddr(t, 62)
+		book.AddPeers(recent)
+
+		book.peers[hearsay.String()].lastSeen = time.Now().Add(-time.Hour)
+
+		batch = book.StaleUnprovenBatch(0)
+		if len(batch) != 2 {
+			t.Fatalf("the unproven batch holds %d addresses, expected 2", len(batch))
+		}
+
+		if batch[0].String() != hearsay.String() {
+			t.Fatalf("batch starts with %s, expected the oldest mention", batch[0])
+		}
+	})
+
+	t.Run("the two classes are drawn apart", func(t *testing.T) {
+		t.Parallel()
+
+		book, _ := newBookForTest(t)
+
+		proven, hearsay := bookAddr(t, 70), bookAddr(t, 71)
+
+		book.AddPeers(proven, hearsay)
+		book.MarkSuccess(proven)
+		book.peers[proven.String()].lastOK = time.Now().Add(-time.Hour)
+
+		stale := book.StaleProvenBatch(time.Minute, 0)
+		if len(stale) != 1 || stale[0].String() != proven.String() {
+			t.Fatalf("the proven batch holds %d addresses, expected the expired one alone", len(stale))
+		}
+
+		unproven := book.StaleUnprovenBatch(0)
+		if len(unproven) != 1 || unproven[0].String() != hearsay.String() {
+			t.Fatalf("the unproven batch holds %d addresses, expected the never reached one alone", len(unproven))
+		}
+
+		if !book.Knows(hearsay) {
+			t.Fatal("the book does not recognise an address it holds")
+		}
+
+		if book.Knows(bookAddr(t, 72)) {
+			t.Fatal("the book recognises an address it has never heard of")
+		}
+	})
+
 	t.Run("being tried sends an address to the back", func(t *testing.T) {
 		t.Parallel()
 
@@ -718,7 +791,7 @@ func TestSeedBookBatches(t *testing.T) {
 			book.AddPeers(bookAddr(t, 20+n))
 		}
 
-		head := book.StaleBatch(time.Minute, 2)
+		head := book.StaleUnprovenBatch(2)
 		if len(head) != 2 {
 			t.Fatalf("batch holds %d addresses, expected 2", len(head))
 		}
@@ -727,7 +800,7 @@ func TestSeedBookBatches(t *testing.T) {
 			book.MarkAttempt(addr)
 		}
 
-		next := book.StaleBatch(time.Minute, 2)
+		next := book.StaleUnprovenBatch(2)
 
 		for _, taken := range head {
 			for _, addr := range next {

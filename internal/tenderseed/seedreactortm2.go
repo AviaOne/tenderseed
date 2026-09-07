@@ -122,10 +122,7 @@ const (
 // The ceiling is the one field where repeating the core is wrong. Five
 // megabytes is what a full node sets for a channel that carries far more than
 // addresses; here it is the size of a message a stranger may have this seed
-// assemble, decode and validate before a single rule of this reactor runs,
-// and decoding an address resolves it when it carries a name rather than an
-// address. So a stranger sets the size of the work and picks the names looked
-// up, once per message, as often as it likes.
+// assemble, decode and validate before a single rule of this reactor runs.
 //
 // This holds an answer, and an answer holds at most maxAddressesServed
 // addresses of about seventy bytes: tens of kilobytes. A quarter of a
@@ -231,25 +228,36 @@ func (r *SeedReactorTM2) GetChannels() []*conn.ChannelDescriptor {
 
 // OnStart dials what the book already holds, then runs the crawl.
 func (r *SeedReactorTM2) OnStart() error {
-	// Bounded like a sweep pass, and proven addresses first: a slot spent on
-	// one this seed has reached can prove it again, where a slot spent on
-	// hearsay may prove nothing. The whole book used to go at once, which the
-	// switch takes whole, having no bound of its own beyond the outbound
-	// limit it reads once at hand over.
-	budget := r.sweepBudget()
+	// A disabled sweep asks for the upstream behaviour, and upstream dials
+	// its whole book at start up, without a bound. Zero is not a budget here:
+	// read as one it left a seed that dialled nothing at all, whatever its
+	// book held, since the sweep that would otherwise dial does not run.
+	if r.checkPeriod <= 0 {
+		if peers := r.book.GetPeers(); len(peers) > 0 {
+			r.logger.Info("dialing known addresses", "count", len(peers), "book", r.book.Size())
+			r.Switch.DialPeers(peers...)
+		}
+	} else {
+		// Bounded like a sweep pass, and proven addresses first: a slot spent
+		// on one this seed has reached can prove it again, where a slot spent
+		// on hearsay may prove nothing. The whole book used to go at once,
+		// which the switch takes whole, having no bound of its own beyond the
+		// outbound limit it reads once at hand over.
+		budget := r.sweepBudget()
 
-	peers := r.book.FreshBatch(0, budget)
-	if len(peers) == 0 {
-		peers = r.book.GetPeers()
-	}
+		peers := r.book.FreshBatch(0, budget)
+		if len(peers) == 0 {
+			peers = r.book.GetPeers()
+		}
 
-	if len(peers) > budget {
-		peers = peers[:budget]
-	}
+		if len(peers) > budget {
+			peers = peers[:budget]
+		}
 
-	if len(peers) > 0 {
-		r.logger.Info("dialing known addresses", "count", len(peers), "book", r.book.Size())
-		r.Switch.DialPeers(peers...)
+		if len(peers) > 0 {
+			r.logger.Info("dialing known addresses", "count", len(peers), "book", r.book.Size())
+			r.Switch.DialPeers(peers...)
+		}
 	}
 
 	go r.crawl()
@@ -311,28 +319,35 @@ func (r *SeedReactorTM2) sweep() {
 //     switch discards the whole remainder with a log line, and a batch larger
 //     than the period can dial leaves its tail marked before it was tried.
 func (r *SeedReactorTM2) sweepOnce() {
-	// The whole stale set, ordered, then narrowed. Narrowing before the
-	// order would hand the ceiling to whatever the map returned first.
-	stale := r.book.StaleBatch(r.freshness(), 0)
+	budget := r.sweepBudget()
 
-	eligible := make([]*p2ptypes.NetAddress, 0, len(stale))
-	connected := 0
+	// Two sets, not one, and renewal is served first.
+	//
+	// Renewing what this seed has already reached keeps a promise it makes to
+	// every node that asks; trying what it was merely told about may prove
+	// nothing at all. Sharing one queue between them let the second win every
+	// time, having no news of its own to be sorted on, so a stranger able to
+	// name addresses decided what the budget was spent on.
+	//
+	// Renewal is bounded by its own need rather than by a share of the budget.
+	// What the seed serves is what it has proven, freshness lasts
+	// freshnessFactor periods, so one pass renews at most what has expired
+	// since the last one. Exploration keeps whatever is left. When the served
+	// set stands at its ceiling renewal takes the whole budget, and that is
+	// right: at that point the seed already serves everything it is able to
+	// prove again, and an address more would be a promise it cannot keep.
+	renewal, heldProven := r.dialable(r.book.StaleProvenBatch(r.freshness(), 0))
+	exploration, heldNew := r.dialable(r.book.StaleUnprovenBatch(0))
 
-	for _, addr := range stale {
-		if r.Switch.Peers().Has(addr.ID) {
-			connected++
-			continue
-		}
+	renewed := min(len(renewal), budget)
+	explored := min(len(exploration), budget-renewed)
 
-		eligible = append(eligible, addr)
-	}
+	connected := heldProven + heldNew
+	overBudget := (len(renewal) - renewed) + (len(exploration) - explored)
 
-	overBudget := 0
-
-	if budget := r.sweepBudget(); len(eligible) > budget {
-		overBudget = len(eligible) - budget
-		eligible = eligible[:budget]
-	}
+	eligible := make([]*p2ptypes.NetAddress, 0, renewed+explored)
+	eligible = append(eligible, renewal[:renewed]...)
+	eligible = append(eligible, exploration[:explored]...)
 
 	for _, addr := range eligible {
 		r.book.MarkAttempt(addr)
@@ -353,13 +368,35 @@ func (r *SeedReactorTM2) sweepOnce() {
 	r.metrics.setBook(r.book.Size(), fresh)
 
 	r.logger.Info("verification sweep",
-		"tried", len(eligible),
+		"renewed", renewed,
+		"explored", explored,
 		"connected", connected,
 		"over_budget", overBudget,
 		"dropped", dropped,
 		"book", r.book.Size(),
 		"fresh", fresh,
 	)
+}
+
+// dialable drops the addresses this seed already holds a connection to and
+// reports how many were dropped. The switch skips those in silence, so an
+// attempt marked for one of them would count a failure against a peer that was
+// answering at that very moment.
+func (r *SeedReactorTM2) dialable(addrs []*p2ptypes.NetAddress) ([]*p2ptypes.NetAddress, int) {
+	eligible := make([]*p2ptypes.NetAddress, 0, len(addrs))
+	connected := 0
+
+	for _, addr := range addrs {
+		if r.Switch.Peers().Has(addr.ID) {
+			connected++
+
+			continue
+		}
+
+		eligible = append(eligible, addr)
+	}
+
+	return eligible, connected
 }
 
 // sweepBudget is how many addresses one sweep may hand to the switch.
@@ -414,25 +451,41 @@ func (r *SeedReactorTM2) servableCeiling() int {
 		return maxAddressesServed
 	}
 
+	if ceiling := r.provableBatch() * freshnessFactor; ceiling < maxAddressesServed {
+		return ceiling
+	}
+
+	return maxAddressesServed
+}
+
+// provableBatch is how many addresses one period can prove, whatever the book
+// happens to hold: the lower of what the switch dials in that time and what
+// its outbound limit allows.
+//
+// It is the rate everything else on this reactor is rated against, so it is
+// stated once here rather than recomputed at each site with a chance of
+// drifting.
+//
+// It never falls below one. This value reaches the book as a limit, where zero
+// means no limit at all, so a seed unable to prove even one address a pass
+// would serve its whole book instead of nothing: the exact opposite of the
+// intent. The freshness window empties the batch on its own in that case, and
+// one is the honest floor.
+func (r *SeedReactorTM2) provableBatch() int {
+	if r.checkPeriod <= 0 {
+		return maxAddressesLearned
+	}
+
 	batch := int(r.checkPeriod / dialCost)
 	if r.maxOutbound < batch {
 		batch = r.maxOutbound
 	}
 
-	// This ceiling reaches the book as a limit, where zero means no limit at
-	// all, so it never falls below one. A seed whose period or whose outbound
-	// limit leaves it unable to prove even one address a pass serves nothing
-	// regardless: the freshness window empties the batch on its own, and one
-	// is the honest floor where zero would mean the whole book.
 	if batch < 1 {
 		batch = 1
 	}
 
-	if ceiling := batch * freshnessFactor; ceiling < maxAddressesServed {
-		return ceiling
-	}
-
-	return maxAddressesServed
+	return batch
 }
 
 // freshness is how long a success stays good.
@@ -459,7 +512,7 @@ func (r *SeedReactorTM2) crawl() {
 		case <-r.ctx.Done():
 			return
 		case <-ticker.C:
-			peers := r.Switch.Peers().List()
+			peers := outboundOnly(r.Switch.Peers().List())
 			if len(peers) == 0 {
 				continue
 			}
@@ -467,6 +520,32 @@ func (r *SeedReactorTM2) crawl() {
 			go r.request(peers[randomBelow(len(peers))])
 		}
 	}
+}
+
+// outboundOnly keeps the peers this seed dialled itself.
+//
+// Asking an inbound peer for addresses costs one connection to whoever wants
+// to be asked, and what it answers is the one thing a stranger controls whole.
+// Asking only outbound peers costs a routable address, reached and proven by
+// this seed before a single word of it is believed. It is the same reasoning
+// this reactor already applies to successes, and the one the core applies when
+// it solicits: an inbound peer proves that it can reach us, which says nothing
+// about whether anyone else can reach it, nor about what it is worth hearing.
+//
+// It closes nothing on its own. It makes the attack cost an address instead of
+// a connection.
+func outboundOnly(peers []p2p.PeerConn) []p2p.PeerConn {
+	kept := make([]p2p.PeerConn, 0, len(peers))
+
+	for _, peer := range peers {
+		if peer == nil || !peer.IsOutbound() {
+			continue
+		}
+
+		kept = append(kept, peer)
+	}
+
+	return kept
 }
 
 // persist writes the book out when it has changed.
@@ -522,23 +601,33 @@ func (r *SeedReactorTM2) request(peer p2p.PeerConn) {
 		return
 	}
 
+	// Noted before the send, and cleared if the send fails. An answer can
+	// arrive on another goroutine between the two, and noting afterwards left
+	// a window where an honest answer was refused as unsolicited and its
+	// sender counted as a peer that had spoken out of turn.
+	r.noteRequest(peer.ID())
+
 	// Non blocking on purpose. A blocking send waits up to ten seconds on a
 	// full queue, and there is nothing to wait for: the crawl comes round
 	// again in seconds, and a peer that cannot take a request now is one this
 	// seed has no reason to hold a goroutine for.
 	if !peer.TrySend(discovery.Channel, payload) {
 		r.logger.Debug("unable to send discovery request", "peer", peer.ID())
+		r.forgetRequest(peer.ID())
 
 		return
 	}
-
-	r.noteRequest(peer.ID())
 }
 
 // peerNotes is what this seed remembers of one peer.
 type peerNotes struct {
 	asked  time.Time
 	served time.Time
+
+	// learned counts the addresses this peer has made the book take that it
+	// had never heard of, and since is when that count started.
+	learned int
+	since   time.Time
 }
 
 // noteRequest records that this peer was asked, and forgets the peers whose
@@ -550,7 +639,13 @@ func (r *SeedReactorTM2) noteRequest(id p2ptypes.ID) {
 	defer r.notesMtx.Unlock()
 
 	for peer, notes := range r.notes {
-		if now.Sub(notes.asked) > answerWindow && now.Sub(notes.served) > answerWindow {
+		// The exploration count is part of what is forgotten, so it has to
+		// hold the entry as long as the other two do. Dropping the entry on
+		// the two exchange dates alone would hand a peer a fresh allowance
+		// for the price of staying quiet for a minute.
+		if now.Sub(notes.asked) > answerWindow &&
+			now.Sub(notes.served) > answerWindow &&
+			now.Sub(notes.since) > r.explorationWindow() {
 			delete(r.notes, peer)
 		}
 	}
@@ -562,6 +657,16 @@ func (r *SeedReactorTM2) noteRequest(id p2ptypes.ID) {
 	}
 
 	notes.asked = now
+}
+
+// forgetRequest takes back a request that never left.
+func (r *SeedReactorTM2) forgetRequest(id p2ptypes.ID) {
+	r.notesMtx.Lock()
+	defer r.notesMtx.Unlock()
+
+	if notes, found := r.notes[id]; found {
+		notes.asked = time.Time{}
+	}
 }
 
 // answersOurRequest reports whether an answer from this peer follows a request
@@ -610,21 +715,19 @@ func (r *SeedReactorTM2) mayServe(id p2ptypes.ID) bool {
 }
 
 // Receive handles the two discovery messages.
+//
+// Decoding goes through our own types, which hold an address as the string it
+// is on the wire and resolve nothing. See seedwire.go for why.
 func (r *SeedReactorTM2) Receive(chID byte, peer p2p.PeerConn, msgBytes []byte) {
-	var msg discovery.Message
-
-	if err := amino.UnmarshalAny(msgBytes, &msg); err != nil {
+	msg, err := decodeDiscovery(msgBytes)
+	if err != nil {
 		r.logger.Error("unable to unmarshal discovery message", "err", err)
-		return
-	}
 
-	if err := msg.ValidateBasic(); err != nil {
-		r.logger.Warn("unable to validate discovery message", "err", err)
 		return
 	}
 
 	switch msg := msg.(type) {
-	case *discovery.Request:
+	case *wireRequest:
 		if !r.mayServe(peer.ID()) {
 			r.logger.Debug("ignoring a request that came too soon", "peer", peer.ID())
 			r.metrics.observe(resultTooSoon, stageServe)
@@ -635,7 +738,7 @@ func (r *SeedReactorTM2) Receive(chID byte, peer p2p.PeerConn, msgBytes []byte) 
 		if err := r.serve(peer); err != nil {
 			r.logger.Warn("unable to answer discovery request", "peer", peer.ID(), "err", err)
 		}
-	case *discovery.Response:
+	case *wireResponse:
 		if !r.answersOurRequest(peer.ID()) {
 			r.logger.Debug("ignoring addresses nobody asked for", "peer", peer.ID())
 			r.metrics.observe(resultUnsolicited, stageLearn)
@@ -643,7 +746,12 @@ func (r *SeedReactorTM2) Receive(chID byte, peer p2p.PeerConn, msgBytes []byte) 
 			return
 		}
 
-		r.learn(msg.Peers)
+		// An entry that is not a literal address is refused here rather than
+		// in learn, which never sees it, so it is counted here too.
+		addrs, refused := parseWireAddresses(msg.Peers)
+		r.metrics.observeMany(resultRejected, stageLearn, refused)
+
+		r.learn(peer.ID(), addrs)
 	default:
 		r.logger.Warn("invalid discovery message received", "peer", peer.ID())
 	}
@@ -786,9 +894,12 @@ func (r *SeedReactorTM2) acceptable(addr *p2ptypes.NetAddress) bool {
 // then nothing at all would ever be dialled after start up: this path would
 // keep a book it never tries. So it hands over as the core does, unbounded,
 // which is precisely the upstream behaviour that setting asks for.
-func (r *SeedReactorTM2) learn(addrs []*p2ptypes.NetAddress) {
+func (r *SeedReactorTM2) learn(id p2ptypes.ID, addrs []*p2ptypes.NetAddress) {
+	allowance := r.explorationAllowance(id)
+
 	kept := make([]*p2ptypes.NetAddress, 0, min(len(addrs), maxAddressesLearned))
 	rejected := 0
+	discovered := 0
 
 	for _, addr := range addrs {
 		if len(kept) == maxAddressesLearned || !r.acceptable(addr) {
@@ -797,8 +908,24 @@ func (r *SeedReactorTM2) learn(addrs []*p2ptypes.NetAddress) {
 			continue
 		}
 
+		// An address the book already holds costs nothing to take again: it
+		// refreshes a mention and adds no work. One the seed has never heard
+		// of is a dial it will owe, so it is rated against what a period can
+		// actually dial.
+		if !r.book.Knows(addr) {
+			if discovered == allowance {
+				rejected++
+
+				continue
+			}
+
+			discovered++
+		}
+
 		kept = append(kept, addr)
 	}
+
+	r.noteExploration(id, discovered)
 
 	r.metrics.observeMany(resultAccepted, stageLearn, len(kept))
 	r.metrics.observeMany(resultRejected, stageLearn, rejected)
@@ -816,12 +943,84 @@ func (r *SeedReactorTM2) learn(addrs []*p2ptypes.NetAddress) {
 	r.metrics.setBook(r.book.Size(), len(r.book.FreshBatch(r.freshness(), r.servableCeiling())))
 }
 
+// explorationWindow is the span over which one peer's exploration allowance is
+// counted. It follows the verification period, since that period is what the
+// allowance is measured in.
+func (r *SeedReactorTM2) explorationWindow() time.Duration {
+	if r.checkPeriod <= 0 {
+		return answerWindow
+	}
+
+	return r.checkPeriod
+}
+
+// explorationAllowance is how many addresses this seed has never heard of it
+// will still take from this peer during the current window.
+//
+// The bound is not a number chosen for the occasion, and that is the point.
+// It is what one period of verification can prove. A seed that takes in more
+// unproven addresses per period than it can dial in that period has handed
+// whoever answers the power to decide what its budget is spent on, which is
+// the whole of the defect this repairs. Rating what comes in on what can be
+// checked leaves nothing to invent, follows every setting an operator changes,
+// and needs no threshold in the configuration file.
+//
+// A legitimate peer never comes close: it answers what it holds, and a network
+// whose addresses this seed has already heard costs no allowance at all.
+func (r *SeedReactorTM2) explorationAllowance(id p2ptypes.ID) int {
+	now := time.Now()
+
+	r.notesMtx.Lock()
+	defer r.notesMtx.Unlock()
+
+	notes, found := r.notes[id]
+	if !found {
+		notes = &peerNotes{}
+		r.notes[id] = notes
+	}
+
+	if notes.since.IsZero() || now.Sub(notes.since) >= r.explorationWindow() {
+		notes.since = now
+		notes.learned = 0
+	}
+
+	if left := r.provableBatch() - notes.learned; left > 0 {
+		return left
+	}
+
+	return 0
+}
+
+// noteExploration books what a peer has just used of its allowance.
+func (r *SeedReactorTM2) noteExploration(id p2ptypes.ID, count int) {
+	if count <= 0 {
+		return
+	}
+
+	r.notesMtx.Lock()
+	defer r.notesMtx.Unlock()
+
+	notes, found := r.notes[id]
+	if !found {
+		notes = &peerNotes{since: time.Now()}
+		r.notes[id] = notes
+	}
+
+	notes.learned += count
+}
+
 // hangUp closes the connection of a peer that has had its answer.
 //
 // The wait is seed_disconnect_wait_period, the key the Cosmos side already
 // uses for the same decision, so one setting means one thing on both stacks.
-// At zero the connection goes now; the answer is sent before this is reached,
-// so nothing is cut short.
+//
+// At zero the connection goes now, and the answer is flushed first. It was
+// queued, not written: the send routine writes it from another goroutine,
+// through a buffer it empties on its own timer, so closing on the spot threw
+// away what had just been counted as served. The upstream Cosmos reactor
+// flushes for exactly this reason before it hangs up. Flushing waits for that
+// routine to drain, which holds this receive loop for as long as the write
+// takes; a peer that has just asked is a peer that is reading.
 //
 // Above zero nothing is scheduled here, and that is the point. A timer per
 // peer outlived the connection it was started for, so a peer that left and
@@ -830,6 +1029,7 @@ func (r *SeedReactorTM2) learn(addrs []*p2ptypes.NetAddress) {
 // place, no timer to outlive anything.
 func (r *SeedReactorTM2) hangUp(peer p2p.PeerConn) {
 	if r.wait <= 0 {
+		peer.FlushStop()
 		r.Switch.StopPeerForError(peer, errSeedServed)
 	}
 }
