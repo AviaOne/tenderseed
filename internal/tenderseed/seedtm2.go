@@ -295,9 +295,15 @@ func NewSeedTM2(homeDir string, seedConfig Config, out io.Writer) (*SeedTM2, err
 		s.Logger.With("module", seedTM2ReactorName),
 	)
 
+	// Refused rather than logged. A seed that starts with one entry fewer
+	// than its operator wrote is a seed doing less than it was told to, and
+	// the error line saying so scrolls past among the others. The Cosmos side
+	// already refuses this at start up; both stacks now behave the same.
 	seedAddrs, errs := p2ptypes.NewNetAddressFromStrings(splitAndTrimList(s.Config.Seeds))
-	for _, seedErr := range errs {
-		s.Logger.Error("invalid seed address", "err", seedErr)
+	if len(errs) > 0 {
+		s.closeTransport()
+
+		return nil, fmt.Errorf("seeds: %w", errs[0])
 	}
 
 	s.Switch = p2p.NewMultiplexSwitch(

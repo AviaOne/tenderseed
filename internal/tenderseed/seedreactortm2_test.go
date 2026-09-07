@@ -3,6 +3,7 @@ package tenderseed
 import (
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +39,7 @@ func (s *fakePeerSet) Has(key p2ptypes.ID) bool {
 
 // fakeSwitch records what it was handed instead of dialling it.
 type fakeSwitch struct {
+	mtx     sync.Mutex
 	peers   *fakePeerSet
 	dialed  [][]*p2ptypes.NetAddress
 	stopped []p2p.PeerConn
@@ -54,7 +56,19 @@ func (s *fakeSwitch) Broadcast(byte, []byte) {}
 func (s *fakeSwitch) Peers() p2p.PeerSet     { return s.peers }
 
 func (s *fakeSwitch) StopPeerForError(peer p2p.PeerConn, _ error) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+
 	s.stopped = append(s.stopped, peer)
+}
+
+// stoppedCount reads the count under the lock, since an immediate hang up now
+// stops the peer from its own goroutine.
+func (s *fakeSwitch) stoppedCount() int {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+
+	return len(s.stopped)
 }
 
 func (s *fakeSwitch) Subscribe(events.EventFilter) (<-chan events.Event, func()) {
@@ -359,12 +373,27 @@ type fakePeer struct {
 	accepts  bool
 	outbound bool
 	sent     int
-	flushed  int
+
+	mtx     sync.Mutex
+	flushed int
 }
 
 func (p *fakePeer) IsOutbound() bool { return p.outbound }
 
-func (p *fakePeer) FlushStop() { p.flushed++ }
+func (p *fakePeer) FlushStop() {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
+	p.flushed++
+}
+
+// flushes reads the count under the lock, for the same reason.
+func (p *fakePeer) flushes() int {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
+	return p.flushed
+}
 
 func (p *fakePeer) ID() p2ptypes.ID { return p.id }
 
@@ -636,6 +665,38 @@ func TestOnePeerIsBounded(t *testing.T) {
 	})
 }
 
+// TestStartLeavesTheSweepItsWork covers the start up that handed over most of
+// the book twice, once itself and once through the pass that follows.
+func TestStartLeavesTheSweepItsWork(t *testing.T) {
+	t.Parallel()
+
+	reactor, book, sw := newSweepFixture(t, 10*time.Minute, 60)
+
+	// One address still proven, one whose proof has expired, one never
+	// reached. Only the first is start up's business.
+	proven := bookAddr(t, 1700)
+	book.AddPeers(proven)
+	book.MarkSuccess(proven)
+
+	expired := bookAddr(t, 1701)
+	book.AddPeers(expired)
+	book.MarkSuccess(expired)
+	book.peers[expired.String()].lastOK = time.Now().Add(-time.Hour)
+
+	book.AddPeers(bookAddr(t, 1702))
+
+	if err := reactor.OnStart(); err != nil {
+		t.Fatalf("unable to start: %v", err)
+	}
+
+	defer reactor.OnStop()
+
+	batch := sw.lastBatch()
+	if len(batch) != 1 || batch[0].ID != proven.ID {
+		t.Fatalf("start up handed over %d addresses, expected the proven one alone", len(batch))
+	}
+}
+
 // TestRenewalHappensBeforeExpiry covers the hole a live seed showed: proofs
 // laid down together expire together, and renewing only what had already
 // expired left every node asking in between with an empty answer.
@@ -765,12 +826,23 @@ func TestImmediateHangUpFlushes(t *testing.T) {
 		t.Fatalf("unable to serve: %v", err)
 	}
 
-	if peer.flushed != 1 {
-		t.Fatalf("the peer was flushed %d times, expected once before the close", peer.flushed)
+	// The hang up runs in its own routine, so this waits rather than reads at
+	// once. A second is far more than it takes and far less than a hang.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if peer.flushes() == 1 && sw.stoppedCount() == 1 {
+			break
+		}
+
+		time.Sleep(time.Millisecond)
 	}
 
-	if len(sw.stopped) != 1 {
-		t.Fatalf("%d peers were stopped, expected one", len(sw.stopped))
+	if got := peer.flushes(); got != 1 {
+		t.Fatalf("the peer was flushed %d times, expected once before the close", got)
+	}
+
+	if got := sw.stoppedCount(); got != 1 {
+		t.Fatalf("%d peers were stopped, expected one", got)
 	}
 }
 

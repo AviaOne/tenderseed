@@ -550,7 +550,7 @@ partial `config.toml` remains valid: any key you delete keeps its default value.
 | `chain_id` | empty | network identifier of the chain this seed serves |
 | `stack` | `cosmos` | p2p family of that chain, `cosmos` or `tm2`. Empty means `cosmos`, so a file written before this key existed keeps its behaviour. An unknown value refuses to start |
 | `app_version` | empty | gno.land only: value announced for the `app` entry of the version set. It belongs to the chain, not to this binary |
-| `seeds` | empty | comma-separated `<node-id>@<host>:<port>` list used to bootstrap discovery. May be emptied once the address book is populated |
+| `seeds` | empty | comma-separated `<node-id>@<host>:<port>` list used to bootstrap discovery. May be emptied once the address book is populated. An entry that cannot be parsed stops the seed at start up on both stacks, naming what is wrong: starting with one seed fewer than was written is doing less than was asked, quietly |
 | `log_level` | `info` | `debug`, `info`, `warn`, `error` or `none`. It applies to the seed own lines as well, so `none` leaves only the startup banner |
 | `node_key_file` | `config/node_key.json` | path to the node identity, relative to the home directory or absolute |
 | `addr_book_file` | `data/addrbook.json` | path to the address book, relative to the home directory or absolute |

@@ -169,7 +169,14 @@ func NewSeed(homeDir string, seedConfig Config, logger log.Logger) (*Seed, error
 		return nil, err
 	}
 
+	// The core accepts connections without any ceiling on how many handshakes
+	// it carries out at once, and the limit on inbound peers is compared only
+	// after a handshake has completed. A peer therefore costs a full key
+	// exchange before anything counts it. The core exposes a ceiling for this
+	// and nothing was passing it; it is set to the configured inbound limit,
+	// which is the number of peers this seed agreed to hold anyway.
 	s.Transport = p2p.NewMultiplexTransport(nodeInfo, *nodeKey, p2p.MConnConfig(p2pConfig))
+	p2p.MultiplexTransportMaxIncomingConnections(p2pConfig.MaxNumInboundPeers)(s.Transport)
 	if err := s.Transport.Listen(*addr); err != nil {
 		return nil, err
 	}

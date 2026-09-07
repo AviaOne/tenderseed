@@ -238,21 +238,22 @@ func (r *SeedReactorTM2) OnStart() error {
 			r.Switch.DialPeers(peers...)
 		}
 	} else {
-		// Bounded like a sweep pass, and proven addresses first: a slot spent
-		// on one this seed has reached can prove it again, where a slot spent
-		// on hearsay may prove nothing. The whole book used to go at once,
-		// which the switch takes whole, having no bound of its own beyond the
-		// outbound limit it reads once at hand over.
+		// Only what the sweep will not take, which runs a moment from now and
+		// takes everything expired or never reached. Handing over the whole
+		// book here meant handing over most of it twice, since nothing is
+		// connected yet to filter either batch and the switch checks its
+		// outbound limit when work is queued rather than when it is taken off
+		// the queue: for the first minutes a seed could hold twice the
+		// configured number of outbound connections and log an error for each
+		// address dialled a second time.
+		//
+		// What is left is the addresses still proven, which the sweep leaves
+		// alone and which are the ones worth reaching first anyway: a slot
+		// spent on one this seed has reached can prove it again, where a slot
+		// spent on hearsay may prove nothing.
 		budget := r.sweepBudget()
 
-		peers := r.book.FreshBatch(0, budget)
-		if len(peers) == 0 {
-			peers = r.book.GetPeers()
-		}
-
-		if len(peers) > budget {
-			peers = peers[:budget]
-		}
+		peers := r.book.FreshBatch(r.renewalWindow(), budget)
 
 		if len(peers) > 0 {
 			r.logger.Info("dialing known addresses", "count", len(peers), "book", r.book.Size())
@@ -815,7 +816,12 @@ func (r *SeedReactorTM2) serve(peer p2p.PeerConn) error {
 	// it costs the most, the empty book of a seed that has just started.
 	if len(addrs) == 0 {
 		r.metrics.observe(resultEmpty, stageServe)
-		r.logger.Warn("no verified address to serve",
+		// Debug, not warn. One line per request is under the control of
+		// whoever connects, and an empty book is the state of every seed that
+		// has just started, so a host holding many identities could grow the
+		// log at will. The empty counter carries the same information and is
+		// published. The Cosmos stack keeps this case at the same level.
+		r.logger.Debug("no verified address to serve",
 			"peer", peer.ID(),
 			"book", r.book.Size(),
 			"verified", r.book.VerifiedSize(),
@@ -1099,8 +1105,15 @@ func (r *SeedReactorTM2) noteExploration(id p2ptypes.ID, count int) {
 // place, no timer to outlive anything.
 func (r *SeedReactorTM2) hangUp(peer p2p.PeerConn) {
 	if r.wait <= 0 {
-		peer.FlushStop()
-		r.Switch.StopPeerForError(peer, errSeedServed)
+		// In its own routine. Flushing waits for the write to drain, and this
+		// runs on the goroutine that reads from this peer: a peer that asks
+		// and then stops reading, with a full socket buffer, would hold that
+		// goroutine for as long as it liked. The upstream Cosmos reactor does
+		// the same flush from a separate goroutine, for the same reason.
+		go func() {
+			peer.FlushStop()
+			r.Switch.StopPeerForError(peer, errSeedServed)
+		}()
 	}
 }
 
