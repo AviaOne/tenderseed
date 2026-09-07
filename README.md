@@ -124,7 +124,9 @@ evidence behind each one.
     costs nothing. An address the seed stays connected to outbound keeps its
     proof for as long as the connection lasts, so a long
     `seed_disconnect_wait_period` no longer ages out what the seed is talking
-    to. The seed asks only the peers it dialled
+    to. And an answer is built one address per network range in turn, so a
+    party running many reachable nodes gets a share of it matching its share of
+    ranges rather than its share of addresses. The seed asks only the peers it dialled
     itself, so being heard costs a reachable address rather than a connection.
     And an address that carries a name instead of an IP is refused on arrival,
     where reading it used to resolve that name on the spot.

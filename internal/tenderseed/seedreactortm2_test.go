@@ -3,6 +3,7 @@ package tenderseed
 import (
 	"io"
 	"log/slog"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -661,6 +662,66 @@ func TestOnePeerIsBounded(t *testing.T) {
 
 		if peer.sent != 1 {
 			t.Fatalf("the seed answered %d times in a row, expected 1", peer.sent)
+		}
+	})
+}
+
+// TestAnswerSpreadsOverGroups covers the eclipse: a party owning most of the
+// book took most of every answer, since the seed checks that an address
+// answers and never that two addresses are independent.
+func TestAnswerSpreadsOverGroups(t *testing.T) {
+	t.Parallel()
+
+	t.Run("one party owning most addresses does not own most of the answer", func(t *testing.T) {
+		t.Parallel()
+
+		addrs := make([]*p2ptypes.NetAddress, 0, 12)
+
+		// Ten addresses from one range, one from each of two others.
+		for n := range 10 {
+			addr := bookAddr(t, 1800+n)
+			addr.IP = net.IPv4(10, 0, 0, byte(n))
+			addrs = append(addrs, addr)
+		}
+
+		second := bookAddr(t, 1820)
+		second.IP = net.IPv4(11, 0, 0, 1)
+
+		third := bookAddr(t, 1821)
+		third.IP = net.IPv4(12, 0, 0, 1)
+
+		addrs = append(addrs, second, third)
+
+		spread := spreadByGroup(addrs)
+
+		if len(spread) != len(addrs) {
+			t.Fatalf("the spread holds %d addresses, expected %d", len(spread), len(addrs))
+		}
+
+		// The first three served come from three different ranges, where a
+		// flat draw would have given the crowded one nine times in ten.
+		seen := map[string]bool{}
+		for _, addr := range spread[:3] {
+			seen[networkGroup(addr.IP)] = true
+		}
+
+		if len(seen) != 3 {
+			t.Fatalf("the first three served come from %d ranges, expected 3", len(seen))
+		}
+	})
+
+	t.Run("nothing is lost when every address shares one range", func(t *testing.T) {
+		t.Parallel()
+
+		addrs := make([]*p2ptypes.NetAddress, 0, 5)
+		for n := range 5 {
+			addr := bookAddr(t, 1830+n)
+			addr.IP = net.IPv4(10, 0, 0, byte(n))
+			addrs = append(addrs, addr)
+		}
+
+		if got := len(spreadByGroup(addrs)); got != 5 {
+			t.Fatalf("the spread holds %d addresses, expected all 5", got)
 		}
 	})
 }

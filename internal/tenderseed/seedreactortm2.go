@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
 	"sync"
 	"time"
 
@@ -894,11 +895,81 @@ func (r *SeedReactorTM2) selection(requester p2ptypes.ID) []*p2ptypes.NetAddress
 
 	shuffleAddresses(addrs)
 
+	// Round robin over network groups rather than a flat draw.
+	//
+	// This seed checks that an address answers. It never checks that two
+	// addresses are independent, and it cannot: reachability is all a dial
+	// proves. So a party running many reachable, well behaved nodes gets them
+	// all proven, and took a share of every answer equal to its share of the
+	// book. A node starting from this seed then learned mostly about one
+	// party, which is the whole of an eclipse.
+	//
+	// Serving one address per group in turn caps that party at its share of
+	// groups instead. Addresses are cheap to own in numbers; ranges are not.
+	// The Cosmos book has this defence upstream, spread across buckets by
+	// group; this one had no notion of group at all.
+	//
+	// Nothing is chosen here. No ceiling, no proportion, only an order, which
+	// is what made this closeable at all: a threshold would have needed a
+	// measurement of the network to be anything but invented.
+	addrs = spreadByGroup(addrs)
+
 	if len(addrs) > maxAddressesServed {
 		addrs = addrs[:maxAddressesServed]
 	}
 
 	return addrs
+}
+
+// networkGroup is the coarse origin of an address: the first two bytes of an
+// IPv4 address, the first four of an IPv6 one. It is what the Cosmos book
+// spreads over, and it is the part of an address that costs something to hold
+// many of.
+func networkGroup(ip net.IP) string {
+	if v4 := ip.To4(); v4 != nil {
+		return string(v4[:2])
+	}
+
+	if len(ip) >= 4 {
+		return string(ip[:4])
+	}
+
+	return ip.String()
+}
+
+// spreadByGroup reorders addresses so that consecutive entries come from
+// different network groups wherever possible, taking one per group in turn.
+// The order the groups are visited in follows the shuffle that precedes this,
+// so it carries no preference of its own.
+func spreadByGroup(addrs []*p2ptypes.NetAddress) []*p2ptypes.NetAddress {
+	groups := make(map[string][]*p2ptypes.NetAddress, len(addrs))
+	order := make([]string, 0, len(addrs))
+
+	for _, addr := range addrs {
+		key := networkGroup(addr.IP)
+
+		if _, seen := groups[key]; !seen {
+			order = append(order, key)
+		}
+
+		groups[key] = append(groups[key], addr)
+	}
+
+	spread := make([]*p2ptypes.NetAddress, 0, len(addrs))
+
+	for len(spread) < len(addrs) {
+		for _, key := range order {
+			bucket := groups[key]
+			if len(bucket) == 0 {
+				continue
+			}
+
+			spread = append(spread, bucket[0])
+			groups[key] = bucket[1:]
+		}
+	}
+
+	return spread
 }
 
 // acceptable reports whether an address may be served or stored.
