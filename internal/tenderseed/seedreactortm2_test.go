@@ -636,6 +636,35 @@ func TestOnePeerIsBounded(t *testing.T) {
 	})
 }
 
+// TestRenewalHappensBeforeExpiry covers the hole a live seed showed: proofs
+// laid down together expire together, and renewing only what had already
+// expired left every node asking in between with an empty answer.
+func TestRenewalHappensBeforeExpiry(t *testing.T) {
+	t.Parallel()
+
+	// Three periods of freshness, so a proof is renewable after two.
+	reactor, book, sw := newSweepFixture(t, 10*time.Minute, 60)
+
+	addr := bookAddr(t, 1600)
+	book.AddPeers(addr)
+	book.MarkSuccess(addr)
+
+	// Twenty-five minutes old: still fresh, since freshness is thirty, and
+	// due to expire before the next pass.
+	book.peers[addr.String()].lastOK = time.Now().Add(-25 * time.Minute)
+
+	if len(book.Fresh(reactor.freshness())) != 1 {
+		t.Fatal("the address should still be served at this age")
+	}
+
+	reactor.sweepOnce()
+
+	batch := sw.lastBatch()
+	if len(batch) != 1 || batch[0].ID != addr.ID {
+		t.Fatal("an address about to expire was not renewed while still served")
+	}
+}
+
 // TestHeldOutboundIsProof covers the address that left the served set while
 // the seed was connected to it: the only proof was the handshake, so a
 // connection lasting longer than the freshness window aged out although it was

@@ -561,8 +561,10 @@ Nothing in that path ever closes a connection.
   nobody can dial.
 - **A sweep on `peer_check_period`.** Stale addresses are handed to the switch
   rather than dialled directly, so one dialler keeps the duplicate-IP rule and
-  a single accounting. It is, while it runs, the only thing that paces what is
-  handed over, though not the only thing that hands
+  a single accounting. A proof is renewed one period before it expires, so an
+  address stays served while it is being proven again rather than falling out
+  of the set and waiting for the next pass. It is, while it runs, the only
+  thing that paces what is handed over, though not the only thing that hands
   addresses over at all: the switch reads its outbound limit once, when an
   address is handed to it, and never again, and the queue it feeds is neither
   bounded nor deduplicated, nothing empties it and nothing reports its depth.
