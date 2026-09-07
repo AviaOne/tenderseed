@@ -18,16 +18,17 @@ import (
 // peer is already held, and how many outbound slots are taken.
 type fakePeerSet struct {
 	held        map[p2ptypes.ID]struct{}
+	byID        map[p2ptypes.ID]p2p.PeerConn
 	list        []p2p.PeerConn
 	numOutbound uint64
 }
 
-func (s *fakePeerSet) Add(p2p.PeerConn) error       { return nil }
-func (s *fakePeerSet) Remove(p2ptypes.ID) bool      { return false }
-func (s *fakePeerSet) Get(p2ptypes.ID) p2p.PeerConn { return nil }
-func (s *fakePeerSet) List() []p2p.PeerConn         { return s.list }
-func (s *fakePeerSet) NumInbound() uint64           { return 0 }
-func (s *fakePeerSet) NumOutbound() uint64          { return s.numOutbound }
+func (s *fakePeerSet) Add(p2p.PeerConn) error           { return nil }
+func (s *fakePeerSet) Remove(p2ptypes.ID) bool          { return false }
+func (s *fakePeerSet) Get(key p2ptypes.ID) p2p.PeerConn { return s.byID[key] }
+func (s *fakePeerSet) List() []p2p.PeerConn             { return s.list }
+func (s *fakePeerSet) NumInbound() uint64               { return 0 }
+func (s *fakePeerSet) NumOutbound() uint64              { return s.numOutbound }
 
 func (s *fakePeerSet) Has(key p2ptypes.ID) bool {
 	_, held := s.held[key]
@@ -43,7 +44,10 @@ type fakeSwitch struct {
 }
 
 func newFakeSwitch() *fakeSwitch {
-	return &fakeSwitch{peers: &fakePeerSet{held: make(map[p2ptypes.ID]struct{})}}
+	return &fakeSwitch{peers: &fakePeerSet{
+		held: make(map[p2ptypes.ID]struct{}),
+		byID: make(map[p2ptypes.ID]p2p.PeerConn),
+	}}
 }
 
 func (s *fakeSwitch) Broadcast(byte, []byte) {}
@@ -570,11 +574,11 @@ func TestOnePeerIsBounded(t *testing.T) {
 		reactor.noteRequest(peer.ID())
 		reactor.Receive(discovery.Channel, peer, answer(t, maxAddressesLearned+50))
 
-		if got, want := book.Size(), reactor.provableBatch(); got != want {
+		if got, want := book.Size(), reactor.explorationShare(); got != want {
 			t.Fatalf("the book took %d addresses, expected %d", got, want)
 		}
 
-		if reactor.provableBatch() >= maxAddressesLearned {
+		if reactor.explorationShare() >= maxAddressesLearned {
 			t.Fatal("this fixture no longer makes the allowance the binding term")
 		}
 	})
@@ -630,6 +634,88 @@ func TestOnePeerIsBounded(t *testing.T) {
 			t.Fatalf("the seed answered %d times in a row, expected 1", peer.sent)
 		}
 	})
+}
+
+// TestHeldOutboundIsProof covers the address that left the served set while
+// the seed was connected to it: the only proof was the handshake, so a
+// connection lasting longer than the freshness window aged out although it was
+// alive.
+func TestHeldOutboundIsProof(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a held outbound connection renews the proof", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, sw := newSweepFixture(t, time.Hour, 60)
+
+		held := bookAddr(t, 1500)
+		book.AddPeers(held)
+		book.MarkSuccess(held)
+
+		// The proof expires while the connection stays up.
+		book.peers[held.String()].lastOK = time.Now().Add(-24 * time.Hour)
+
+		peer := &fakePeer{id: held.ID, accepts: true, outbound: true}
+		sw.peers.held[held.ID] = struct{}{}
+		sw.peers.byID[held.ID] = peer
+
+		reactor.sweepOnce()
+
+		if len(book.Fresh(reactor.freshness())) != 1 {
+			t.Fatal("a connected address was not renewed by its own connection")
+		}
+	})
+
+	t.Run("a held inbound connection proves nothing", func(t *testing.T) {
+		t.Parallel()
+
+		reactor, book, sw := newSweepFixture(t, time.Hour, 60)
+
+		held := bookAddr(t, 1510)
+		book.AddPeers(held)
+		book.MarkSuccess(held)
+		book.peers[held.String()].lastOK = time.Now().Add(-24 * time.Hour)
+
+		peer := &fakePeer{id: held.ID, accepts: true}
+		sw.peers.held[held.ID] = struct{}{}
+		sw.peers.byID[held.ID] = peer
+
+		reactor.sweepOnce()
+
+		if len(book.Fresh(reactor.freshness())) != 0 {
+			t.Fatal("an inbound connection was taken as proof of reachability")
+		}
+	})
+}
+
+// TestExplorationIsSharedBetweenSources covers what one peer may decide: with
+// the whole rate to itself it filled the exploration budget alone.
+func TestExplorationIsSharedBetweenSources(t *testing.T) {
+	t.Parallel()
+
+	// Six dials fit in this period.
+	reactor, book, sw := newSweepFixture(t, 6*dialCost, 60)
+
+	if got := reactor.explorationShare(); got != 6 {
+		t.Fatalf("share with no source is %d, expected the whole rate", got)
+	}
+
+	sw.peers.numOutbound = 3
+
+	if got := reactor.explorationShare(); got != 2 {
+		t.Fatalf("share with three sources is %d, expected a third", got)
+	}
+
+	flood := make([]*p2ptypes.NetAddress, 0, 20)
+	for n := range 20 {
+		flood = append(flood, bookAddr(t, 1520+n))
+	}
+
+	reactor.learn(bookAddr(t, 1550).ID, flood)
+
+	if got := book.Size(); got != 2 {
+		t.Fatalf("the book took %d addresses, expected the share of 2", got)
+	}
 }
 
 // TestImmediateHangUpFlushes covers the answer that was queued and thrown away
@@ -818,6 +904,11 @@ func TestExplorationAllowance(t *testing.T) {
 
 		if got := book.Size(); got != 3 {
 			t.Fatalf("the book took %d addresses over two answers, expected 3", got)
+		}
+
+		// And with sources to share the rate with, one gets less.
+		if got := reactor.explorationShare(); got != 3 {
+			t.Fatalf("share with no source is %d, expected the whole rate", got)
 		}
 	})
 

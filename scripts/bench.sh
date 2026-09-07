@@ -67,7 +67,8 @@ sum_field() { grep -o -- "$1=[0-9]*" "${log}" | cut -d= -f2 | awk '{s+=$1} END {
 echo "sweeps:         $(grep -c 'verification sweep' "${log}" || true)"
 
 if [ "${stack}" = "tm2" ]; then
-  echo "addresses tried:  $(sum_field tried)"
+  echo "addresses renewed:$(sum_field renewed)"
+  echo "addresses explored:$(sum_field explored)"
   echo "already connected:$(sum_field connected)"
   echo "over budget:      $(sum_field over_budget)"
   echo "dropped:          $(sum_field dropped)"

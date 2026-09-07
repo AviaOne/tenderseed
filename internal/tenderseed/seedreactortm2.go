@@ -382,6 +382,17 @@ func (r *SeedReactorTM2) sweepOnce() {
 // reports how many were dropped. The switch skips those in silence, so an
 // attempt marked for one of them would count a failure against a peer that was
 // answering at that very moment.
+//
+// A held outbound connection is also read for what it is, a proof of life, and
+// records a success. Without that the proof of a connected address was the
+// handshake and nothing after it: past the freshness window the address left
+// the served set although the seed was talking to it, and only its closing
+// could bring it back. A connection held for twenty hours is better proven
+// than one dialled twenty-nine minutes ago.
+//
+// An inbound connection proves nothing of the sort. It says the peer can reach
+// us, which is not what this seed promises about the addresses it hands out,
+// and it is the same reasoning AddPeer already applies.
 func (r *SeedReactorTM2) dialable(addrs []*p2ptypes.NetAddress) ([]*p2ptypes.NetAddress, int) {
 	eligible := make([]*p2ptypes.NetAddress, 0, len(addrs))
 	connected := 0
@@ -389,6 +400,10 @@ func (r *SeedReactorTM2) dialable(addrs []*p2ptypes.NetAddress) ([]*p2ptypes.Net
 	for _, addr := range addrs {
 		if r.Switch.Peers().Has(addr.ID) {
 			connected++
+
+			if peer := r.Switch.Peers().Get(addr.ID); peer != nil && peer.IsOutbound() {
+				r.book.MarkSuccess(addr)
+			}
 
 			continue
 		}
@@ -954,16 +969,44 @@ func (r *SeedReactorTM2) explorationWindow() time.Duration {
 	return r.checkPeriod
 }
 
+// explorationShare is what one source may have this seed take in over a
+// window: what a period can prove, divided between the peers this seed is
+// listening to.
+//
+// Rating the quota on the rate alone gave each peer the whole of it, so one
+// peer answering was enough to fill the exploration budget by itself and keep
+// filling it, and nothing legitimate was ever dialled while it did. That the
+// rate carried no invented number did not make one hundred per cent of it any
+// less of a choice.
+//
+// Dividing keeps the rate as the only quantity and shares it, so the more
+// sources this seed hears, the less any single one of them decides. It never
+// falls below one: a share of zero would refuse everything from everyone.
+func (r *SeedReactorTM2) explorationShare() int {
+	sources := int(r.Switch.Peers().NumOutbound())
+	if sources < 1 {
+		sources = 1
+	}
+
+	share := r.provableBatch() / sources
+	if share < 1 {
+		share = 1
+	}
+
+	return share
+}
+
 // explorationAllowance is how many addresses this seed has never heard of it
 // will still take from this peer during the current window.
 //
 // The bound is not a number chosen for the occasion, and that is the point.
-// It is what one period of verification can prove. A seed that takes in more
-// unproven addresses per period than it can dial in that period has handed
-// whoever answers the power to decide what its budget is spent on, which is
-// the whole of the defect this repairs. Rating what comes in on what can be
-// checked leaves nothing to invent, follows every setting an operator changes,
-// and needs no threshold in the configuration file.
+// It is what one period of verification can prove, shared between sources. A
+// seed that takes in more unproven addresses per period than it can dial in
+// that period has handed whoever answers the power to decide what its budget
+// is spent on, which is the whole of the defect this repairs. Rating what
+// comes in on what can be checked leaves nothing to invent, follows every
+// setting an operator changes, and needs no threshold in the configuration
+// file.
 //
 // A legitimate peer never comes close: it answers what it holds, and a network
 // whose addresses this seed has already heard costs no allowance at all.
@@ -984,7 +1027,7 @@ func (r *SeedReactorTM2) explorationAllowance(id p2ptypes.ID) int {
 		notes.learned = 0
 	}
 
-	if left := r.provableBatch() - notes.learned; left > 0 {
+	if left := r.explorationShare() - notes.learned; left > 0 {
 		return left
 	}
 

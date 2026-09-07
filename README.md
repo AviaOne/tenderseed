@@ -62,7 +62,7 @@ limits in [FORK.md](FORK.md), section 5.4.
 
 ## What this fork changes
 
-Fourteen changes, all measured against upstream. See [FORK.md](FORK.md) for the
+Sixteen changes, all measured against upstream. See [FORK.md](FORK.md) for the
 evidence behind each one.
 
 1. **Supported p2p stack.** CometBFT `v0.40.0`, pinned, instead of Tendermint
@@ -117,9 +117,14 @@ evidence behind each one.
     anyone was enough to empty what the seed serves.
 16. **What a peer may make the seed do is rated against what it can check.**
     How many addresses one peer may have the seed take in over a period is
-    what that period is able to dial, which follows `peer_check_period` and
-    `max_num_outbound_peers` rather than any value of its own; an address the
-    seed already knows costs nothing. The seed asks only the peers it dialled
+    what that period is able to dial, divided between the peers the seed is
+    listening to, so the more sources it hears the less any one of them
+    decides. It follows `peer_check_period` and `max_num_outbound_peers`
+    rather than any value of its own, and an address the seed already knows
+    costs nothing. An address the seed stays connected to outbound keeps its
+    proof for as long as the connection lasts, so a long
+    `seed_disconnect_wait_period` no longer ages out what the seed is talking
+    to. The seed asks only the peers it dialled
     itself, so being heard costs a reachable address rather than a connection.
     And an address that carries a name instead of an IP is refused on arrival,
     where reading it used to resolve that name on the spot.

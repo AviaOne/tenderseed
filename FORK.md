@@ -561,7 +561,8 @@ Nothing in that path ever closes a connection.
   nobody can dial.
 - **A sweep on `peer_check_period`.** Stale addresses are handed to the switch
   rather than dialled directly, so one dialler keeps the duplicate-IP rule and
-  a single accounting. It is also, while it runs, the only thing that hands
+  a single accounting. It is, while it runs, the only thing that paces what is
+  handed over, though not the only thing that hands
   addresses over at all: the switch reads its outbound limit once, when an
   address is handed to it, and never again, and the queue it feeds is neither
   bounded nor deduplicated, nothing empties it and nothing reports its depth.
@@ -709,9 +710,9 @@ otherwise:
    release notes, each a configuration that used to start and now refuses to,
    saying which key is wrong: the metrics endpoint enabled while the namespace
    is left empty; `max_num_outbound_peers` at zero; `max_num_inbound_peers` at
-   zero, which accepted no connection at all; and a moniker that is not
-   printable ASCII, which every remote end refused at the end of a handshake
-   while nothing was said locally.
+   zero, which accepted no connection at all; and a moniker or a `chain_id`
+   that is not printable ASCII, which every remote end refused at the end of a
+   handshake while nothing was said locally.
 
 ---
 

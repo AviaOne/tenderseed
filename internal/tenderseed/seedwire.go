@@ -22,11 +22,19 @@ import (
 // long each one took, before a single rule of this reactor had run.
 //
 // Reserving that to peers we asked would have narrowed the door. Closing it
-// means never resolving at all, which is what this does: a wire address is a
-// string until it has been parsed strictly, and a name is refused. Nothing
-// legitimate is lost. Every address a node puts on this wire is built either
-// from an established connection or from an address that was already resolved,
-// so a name reaching us is either a mistake or an attempt.
+// means never resolving on this channel, which is what this does: a wire
+// address is a string until it has been parsed strictly, and a name is
+// refused. Nothing legitimate is lost. Every address a node puts on this wire
+// is built either from an established connection or from an address that was
+// already resolved, so a name reaching us is either a mistake or an attempt.
+//
+// On this channel, and not in the binary. Both cores parse the address a peer
+// announces in its node info during the handshake, before either accept loop
+// compares the connection count to its limit, and that parse resolves a name
+// the same way. It is upstream code on both stacks, this fork does not make it
+// worse, and the only bound within reach here would be a ceiling on concurrent
+// inbound connections, which neither stack sets. Said plainly rather than left
+// to be read as covered by the paragraph above.
 //
 // The types below are ours, registered on a codec of our own. The core's codec
 // is untouched, and the type names on the wire are the ones the core emits, so
