@@ -221,7 +221,10 @@ absence of jitter in the backoff.
   decision, through a cache that never holds because its receiver is a value,
   and it panics if a resolution fails. The default is `true` and no duplicate
   IP filter is registered, so the path is not taken in production. It stays
-  exposed and documented as adjustable.
+  exposed and documented as adjustable. The same absence has a second
+  consequence, on the other side of the connection: with no inbound filter
+  registered, `false` does not refuse a second inbound connection from one
+  host on this stack, where the TM2 core applies the key at acceptance.
 - **The backoff has no jitter**, unlike the upstream formula whose scale it
   shares, so retries on one address are perfectly periodic where upstream
   spreads them.

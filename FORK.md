@@ -154,8 +154,12 @@ A choice specific to this fork. `cosmoseed` and the NibiruChain checker both
 leave their verification connections open.
 
 Consequences: no accumulation of outbound connections, no saturation guard
-needed, and a clean separation of roles, since the upstream crawl collects while
-this reactor judges.
+needed, and a separation of roles, the upstream crawl collecting while this
+reactor judges. The separation is not total, and the exception is worth naming:
+a verification dial reaches the upstream reactor as an ordinary outbound peer,
+so that reactor asks it for addresses whenever the book wants more, just before
+we close the connection. The answer cannot arrive, and nothing is measurably
+affected, but the roles are not as cleanly split as the sentence above reads.
 
 Accepted trade-off: if the crawl opens the same address between our
 `IsDialingOrExistingAddress` check and our close, we close its connection. The
@@ -324,7 +328,8 @@ wait. Anything older than twice the cap goes regardless.
 | `seed_disconnect_wait_period` | `5m` | judgement, checked at runtime, see 2.3 |
 | `peer_check_workers` | 8 | a selection returns at most 250 addresses and a dial costs at most 7 seconds, 1s to connect then two consecutive 3s handshake deadlines, so a sequential sweep takes about 29 minutes and an 8-worker sweep about 3m40 |
 | `peer_check_period` | `10m` | five times the minimum interval between crawls, and about 2.7 times the duration of one sweep. It also sets the window during which a successful verdict is trusted, see 3.6. `0` disables verification, and on TM2 the pacing of hand overs with it, see 6.4 |
-| `max_num_outbound_peers` | `60` | the upstream default. Refused at zero, which would leave a seed dialling nothing, verifying nothing and serving nothing, while logging normally |
+| `max_num_outbound_peers` | `60` | the upstream default. **Not read at all in seed mode on this stack**: its single reader upstream is a routine a seed never runs. It is read on TM2, where it bounds the sweep and the served set, and it is refused at zero on both stacks because a key must not mean two things |
+| `max_num_inbound_peers` | `100` | refused at zero on both stacks: neither accept loop takes a connection past this value, so zero describes a seed that serves nobody in silence |
 | `allow_duplicate_ip` | `true` | the value upstream hardcoded |
 | `metrics_listen_addr` | empty | disabled by default, so nothing changes for an existing user |
 | `metrics_namespace` | `cometbft` | the upstream default, so validator dashboards apply unchanged |
@@ -659,6 +664,10 @@ which is the one thing this measurement settles in its favour.
 Named here so that nothing above is read as covering it:
 
 - the memory cost of a TM2 seed holding many inbound connections at once;
+- what `allow_duplicate_ip = false` is worth on the Cosmos stack against
+  inbound connections: nothing, since no inbound filter is registered there.
+  The key acts only on the connections that seed opens. On TM2 the core
+  applies it at acceptance;
 - behaviour at saturation, on either stack: no run has approached the inbound
   ceiling. `allow_duplicate_ip` defaults to true here, where the core defaults
   to false, so nothing stops one host from taking every inbound slot under
@@ -696,11 +705,13 @@ otherwise:
 7. the `TENDERSEED_CHAIN_ID` and `TENDERSEED_SEEDS` environment variables, with
    flags taking priority;
 8. **a `config.toml` written for a v1 or a v2 keeps working when only the binary
-   is replaced.** Two exceptions, both introduced in v3.0.0 and named in its
-   release notes: a configuration that enables the metrics endpoint while
-   leaving the namespace empty used to start and now refuses to, and so does
-   one setting `max_num_outbound_peers` to zero, which used to start a seed
-   that could serve nothing and said so nowhere.
+   is replaced.** Four exceptions, all introduced in v3.0.0 and named in its
+   release notes, each a configuration that used to start and now refuses to,
+   saying which key is wrong: the metrics endpoint enabled while the namespace
+   is left empty; `max_num_outbound_peers` at zero; `max_num_inbound_peers` at
+   zero, which accepted no connection at all; and a moniker that is not
+   printable ASCII, which every remote end refused at the end of a handshake
+   while nothing was said locally.
 
 ---
 
@@ -720,10 +731,13 @@ Decided and assumed:
 
 ## 9. Other changes
 
-- **Every panic is gone.** Errors are printed to standard error with a non-zero
-  exit code, which a unit file or a script can act on. A `Restart=always` unit
-  facing a bad configuration now loops on a readable message instead of a
-  goroutine dump.
+- **Every panic is gone from this fork's own code.** Errors are printed to
+  standard error with a non-zero exit code, which a unit file or a script can
+  act on. A `Restart=always` unit facing a bad configuration now loops on a
+  readable message instead of a goroutine dump. It says nothing about the two
+  cores, which keep theirs: a listener error still stops the Cosmos accept
+  routine by panic, and so does a failed resolution on the path
+  `allow_duplicate_ip = false` opens, see section 5 of `ARCHITECTURE.md`.
 - **The container workflow never publishes an intermediate state.** Upstream
   pushed a public image on every push to its default branch, with no build check,
   no lint and no test. Here it fires on a version tag, and a manual run started
