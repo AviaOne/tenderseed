@@ -532,15 +532,21 @@ Nothing in that path ever closes a connection.
 
 ### 6.4 What this fork adds on TM2
 
-- **A book that is served.** Up to 250 verified addresses, the selection size the
-  Cosmos side of this same binary already serves, against the core's 30 drawn
-  from the connections a node happens to hold. The book holds more than it
-  serves: an address counts as fresh only while this seed is able to prove it
-  again inside the freshness window, which its dialling rate and its outbound
-  limit bound together, so what lies above that ceiling stays held and
-  unserved, waiting its turn to be proven rather than being handed out on an
-  expired proof. The Cosmos side already serves a subset of a larger book, so
-  this is the same arrangement rather than a new one.
+- **A book that is served**, against the core's thirty addresses drawn from the
+  connections a node happens to hold. The book holds more than it serves: an
+  address counts as fresh only while this seed is able to prove it again inside
+  the freshness window, which its dialling rate and its outbound limit bound
+  together, so what lies above that ceiling stays held and unserved, waiting
+  its turn to be proven rather than being handed out on an expired proof. That
+  ceiling is what bites in any ordinary configuration; the selection size the
+  Cosmos side of this same binary serves is the absolute cap above it. The
+  Cosmos side already serves a subset of a larger book, so this is the same
+  arrangement rather than a new one.
+- **An answer spread over network ranges.** One address per range is taken in
+  turn rather than drawn from the whole servable set. A seed checks that an
+  address answers, never that two addresses are independent, so a party running
+  many reachable nodes would otherwise take a share of every answer equal to
+  its share of the book. No threshold is set, only an order.
 - **Verification state on top of the core's own file.** The same JSON shape and
   the same 1000-address ceiling, plus three optional fields: consecutive
   failures, last attempt, last success. Anything that does not know them ignores
@@ -576,24 +582,39 @@ Nothing in that path ever closes a connection.
   period runs no sweep and gives that pacing up with the verification, which
   is what restoring the upstream behaviour means here.
   One sweep hands over what the free outbound slots
-  and the period can really take, oldest news first, and an attempt is recorded
-  only for an address actually handed over: the switch silently skips one it is
-  already connected to, and discards whatever exceeds its outbound limit, so
-  counting either as an attempt would count a failure against an address that
-  was never tried. Being tried sends an address to the back of the queue, so
-  the rotation follows from the order instead of being a mechanism of its own.
-  Five consecutive failures evict an address. A success is trusted for three
-  periods, so a sweep may miss once without emptying what the seed can answer.
-- **Bounds on what one peer may do.** Three, none of which this stack has and
-  all three of which the Cosmos side gets from its own core. A list of
-  addresses is taken only from a peer this seed asked, one request buying one
-  answer, because an answer nobody asked for is the single thing a stranger
-  controls whole: when it comes, how often, and what it carries. What one
-  answer may add is capped at what this seed itself serves, since the core
-  validates an answer without ever counting its entries. And a peer that asks
-  again immediately is not answered twice, a request being ten bytes where an
-  answer is thousands and a sort of the whole book under lock.
-  Below all three, the receive ceiling of the discovery channel is set far
+  and the period can really take, and it draws from two sets rather than one:
+  renewing what this seed has already reached comes first, bounded by what has
+  actually come due, and exploring what it was merely told about takes whatever
+  is left. Sharing one queue between them let the second win every time, having
+  no news of its own to be sorted on, so a stranger able to name addresses
+  decided what the budget was spent on. Within each set the order is oldest
+  news first, a mention counting as news like a success or an attempt. An
+  attempt is recorded only for an address actually handed over: the switch
+  silently skips one it is already connected to, and discards whatever exceeds
+  its outbound limit, so counting either as an attempt would count a failure
+  against an address that was never tried. Being tried sends an address to the
+  back of the queue, so the rotation follows from the order instead of being a
+  mechanism of its own. A held outbound connection counts as the proof of life
+  it is, at every pass. Five consecutive failures evict an address. A success is
+  trusted for three periods and renewable one period before it expires, so an
+  address is proven again while it is still being served rather than after it
+  has left the set.
+- **Bounds on what one peer may do.** Five, none of which this stack has and
+  three of which the Cosmos side gets from its own core. A list of addresses is
+  taken only from a peer this seed asked, one request buying one answer,
+  because an answer nobody asked for is the single thing a stranger controls
+  whole: when it comes, how often, and what it carries. A peer that asks again
+  immediately is not answered twice, a request being ten bytes where an answer
+  is thousands and a sort of the whole book under lock. How many addresses this
+  seed has never heard of one peer may have it take in over a period is what
+  that period is able to dial, divided between the peers it is listening to, so
+  the more sources it hears the less any one of them decides; an address
+  already in the book costs nothing. Addresses are asked only of the peers this
+  seed dialled itself, so being heard costs a reachable address rather than an
+  inbound connection. And an address that carries a name instead of a literal
+  one is refused on arrival, where reading it used to resolve that name on the
+  spot.
+  Below all of them, the receive ceiling of the discovery channel is set far
   under the core's: that ceiling is local to each side of a connection and
   never compared in the handshake, and it is what decides how much work a
   stranger can have this seed assemble, decode and resolve before any rule of
