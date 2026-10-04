@@ -375,6 +375,10 @@ type fakePeer struct {
 	outbound bool
 	sent     int
 
+	// payload is the last message the seed handed over, so a test can read
+	// what was actually put on the wire.
+	payload []byte
+
 	mtx     sync.Mutex
 	flushed int
 }
@@ -402,12 +406,13 @@ func (p *fakePeer) Status() conn.ConnectionStatus {
 	return conn.ConnectionStatus{Duration: p.duration}
 }
 
-func (p *fakePeer) TrySend(byte, []byte) bool {
+func (p *fakePeer) TrySend(_ byte, msg []byte) bool {
 	if !p.accepts {
 		return false
 	}
 
 	p.sent++
+	p.payload = msg
 
 	return true
 }
@@ -465,6 +470,64 @@ func TestServeDoesNotBlockOnAPeer(t *testing.T) {
 			t.Fatal("a peer that read its answer was hung up on")
 		}
 	})
+}
+
+// TestAnswerFitsTheWire is the regression test of the answer a node running
+// gno v1.5.0 or later rejects whole. Its Response.ValidateBasic refuses a
+// discovery answer carrying more than maxPeersShared addresses, thirty, and the
+// node then keeps none of them, so a seed serving more than that served
+// nothing at all to such a node.
+//
+// The limit is written here as the number it is in the core, not taken from
+// the constant under test, so that this test checks the wire rule rather than
+// the code against itself.
+func TestAnswerFitsTheWire(t *testing.T) {
+	t.Parallel()
+
+	const wireLimit = 30
+
+	// Both bounds wide, so the fresh set is far larger than one answer.
+	reactor, book, _ := newSweepFixture(t, time.Hour, 100)
+
+	for n := range 3 * wireLimit {
+		addr := bookAddr(t, 2000+n)
+		book.AddPeers(addr)
+		book.MarkSuccess(addr)
+	}
+
+	seen := make(map[string]bool)
+
+	for n := range 20 {
+		peer := &fakePeer{id: bookAddr(t, 2200+n).ID, accepts: true}
+
+		if err := reactor.serve(peer); err != nil {
+			t.Fatalf("unable to serve: %v", err)
+		}
+
+		msg, err := decodeDiscovery(peer.payload)
+		if err != nil {
+			t.Fatalf("unable to decode the answer: %v", err)
+		}
+
+		answer, ok := msg.(*wireResponse)
+		if !ok {
+			t.Fatalf("decoded %T, expected an answer", msg)
+		}
+
+		if got := len(answer.Peers); got != wireLimit {
+			t.Fatalf("the answer carries %d addresses, expected %d", got, wireLimit)
+		}
+
+		for _, addr := range answer.Peers {
+			seen[addr] = true
+		}
+	}
+
+	// Cut after the shuffle, not before: successive requesters draw from the
+	// whole fresh set rather than always from the same part of it.
+	if len(seen) <= wireLimit {
+		t.Fatalf("twenty answers named %d distinct addresses, expected more than %d", len(seen), wireLimit)
+	}
 }
 
 // TestCycle covers the rule that replaced the per peer timer: every connection

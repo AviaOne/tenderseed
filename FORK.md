@@ -542,6 +542,11 @@ Nothing in that path ever closes a connection.
   Cosmos side of this same binary serves is the absolute cap above it. The
   Cosmos side already serves a subset of a larger book, so this is the same
   arrangement rather than a new one.
+- **One answer carries at most thirty addresses**, the core's own ceiling.
+  Since gno v1.5.0 it is a rule of the wire: a node refuses a discovery answer
+  carrying more and keeps none of it. Each answer is drawn from the whole fresh
+  set, shuffled and spread over network ranges before it is cut, so successive
+  requesters receive different parts of that set.
 - **An answer spread over network ranges.** One address per range is taken in
   turn rather than drawn from the whole servable set. A seed checks that an
   address answers, never that two addresses are independent, so a party running

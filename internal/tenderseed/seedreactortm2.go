@@ -18,24 +18,39 @@ import (
 	p2ptypes "github.com/gnolang/gno/tm2/pkg/p2p/types"
 )
 
-// maxAddressesServed bounds one discovery answer.
+// maxAddressesPerAnswer bounds one discovery answer.
 //
-// The core answers with at most 30, which is not a protocol limit but the size
-// of the peer set it draws from. The wire imposes none that matters here: the
-// receiving side accepts 5 MB on this channel and validates the list without
-// counting it, while an encoded address is on the order of 60 bytes, so 250
-// addresses are three orders of magnitude below the ceiling.
+// It is the core's own ceiling, maxPeersShared in tm2/pkg/p2p/discovery, and
+// since gno v1.5.0 it is a rule of the wire: Response.ValidateBasic refuses an
+// answer carrying more addresses than that, and the receiving node then logs a
+// warning and keeps none of them. An answer above it is worth nothing to any
+// node running that version or later, so the value is taken as it is rather
+// than chosen. The same check refuses an answer carrying no address, which is
+// why an empty one is never sent.
+//
+// The core commit pinned by this repository predates that rule, so nothing in
+// this build enforces it on this seed's behalf, and the constant is repeated
+// here because the core does not export it.
+const maxAddressesPerAnswer = 30
+
+// maxAddressesServed bounds the set an answer is drawn from, that is what this
+// seed may call fresh.
 //
 // 250 is the selection size the Cosmos side of this binary already serves, so
-// both stacks hand out the same amount and the two can be compared.
+// both stacks hold the same amount and the two can be compared. It is not what
+// one answer carries: each answer is drawn from this set, shuffled and spread
+// over network ranges, then cut to maxAddressesPerAnswer, so successive
+// requesters receive different parts of it.
 const maxAddressesServed = 250
 
 // maxAddressesLearned bounds what one answer may add to the book.
 //
-// Nothing on the wire bounds it: the core validates an answer without ever
-// counting its entries. The book has a ceiling, so filling it is enough to
-// push out what this seed had reached. The value is what this seed serves, so
-// two of these seeds talking to each other lose nothing.
+// The core commit pinned here validates an answer without counting its
+// entries, so a bound of our own stays. The book has a ceiling, so filling it
+// is enough to push out what this seed had reached. The value is the size of
+// the set this seed draws its answers from: far above what a node running gno
+// v1.5.0 or later sends, and enough to read in full a seed of this project
+// older than v3.1.0, which answered with up to that many.
 const maxAddressesLearned = maxAddressesServed
 
 // answerWindow is how long an answer may follow the request that asked for
@@ -125,8 +140,9 @@ const (
 // addresses; here it is the size of a message a stranger may have this seed
 // assemble, decode and validate before a single rule of this reactor runs.
 //
-// This holds an answer, and an answer holds at most maxAddressesServed
-// addresses of about seventy bytes: tens of kilobytes. A quarter of a
+// This holds an answer from another node, and an answer holds at most
+// maxAddressesLearned addresses, the most a seed of this project older than
+// v3.1.0 sends, of about seventy bytes each: tens of kilobytes. A quarter of a
 // megabyte leaves more than an order of magnitude of room and cuts what one
 // connection can pin by twenty. A peer that sends more has its connection
 // closed by the core, before this reactor sees anything.
@@ -459,11 +475,11 @@ func (r *SeedReactorTM2) sweepBudget() int {
 // request arrives, and reading the free slots here would empty the answer
 // exactly when the seed is busiest.
 //
-// The answer ceiling applies on top: this bounds what may be called fresh,
-// maxAddressesServed bounds what fits in one message.
+// maxAddressesServed caps this from above, and maxAddressesPerAnswer then
+// bounds what one message carries out of it.
 func (r *SeedReactorTM2) servableCeiling() int {
 	// A disabled sweep disables the ageing with it, so nothing goes stale and
-	// the answer ceiling is the only one left.
+	// maxAddressesServed is the only ceiling left.
 	if r.checkPeriod <= 0 {
 		return maxAddressesServed
 	}
@@ -914,8 +930,11 @@ func (r *SeedReactorTM2) selection(requester p2ptypes.ID) []*p2ptypes.NetAddress
 	// measurement of the network to be anything but invented.
 	addrs = spreadByGroup(addrs)
 
-	if len(addrs) > maxAddressesServed {
-		addrs = addrs[:maxAddressesServed]
+	// Cut last, after the shuffle and the spread, so that every requester
+	// draws from the whole fresh set and every answer still opens with one
+	// address per range. See maxAddressesPerAnswer for why the cut is there.
+	if len(addrs) > maxAddressesPerAnswer {
+		addrs = addrs[:maxAddressesPerAnswer]
 	}
 
 	return addrs

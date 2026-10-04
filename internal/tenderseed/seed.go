@@ -43,7 +43,7 @@ type Seed struct {
 
 // Version is the software version announced to peers during the handshake.
 // Override it at build time with -ldflags "-X github.com/AviaOne/tenderseed/internal/tenderseed.Version=<value>".
-var Version = "3.0.0"
+var Version = "3.1.0"
 
 // NewSeed builds every component of a seed node and wires them together.
 // It listens on the configured address but does not start the switch.
