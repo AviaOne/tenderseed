@@ -699,8 +699,7 @@ seed knows addresses it has not been able to reach, not that it has none.
 
 ## About AviaOne
 
-[AviaOne](https://aviaone.com) has been a professional Cosmos validator for over
-three years, and builds tooling for the ecosystem rather than for itself alone.
+[AviaOne](https://aviaone.com) has been a professional blockchain validator since 2020, on Cosmos chains and gno.land, and builds tooling for the ecosystem rather than for itself alone.
 
 Its main contribution is
 **[ABS, AviaOne BlockChains Service](https://aviaone.com/blockchains-service/)**,
